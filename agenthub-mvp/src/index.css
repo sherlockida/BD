@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: #f5f5f7;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #a1a1aa; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* 让 prose-like markdown 列表稍好看 */
+.msg-text p { margin: 0 0 8px 0; }
+.msg-text p:last-child { margin-bottom: 0; }
+.msg-text strong { font-weight: 600; }
+.msg-text code {
+  background: rgba(0,0,0,0.06);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+.msg-text blockquote {
+  border-left: 3px solid #d4d4d8;
+  padding-left: 12px;
+  margin: 4px 0 8px;
+  color: #52525b;
+}
+.msg-text ul, .msg-text ol {
+  margin: 4px 0 8px 16px;
+  padding-left: 8px;
+}
+
+/* 自定义的"打字"光标 */
+.typing-cursor::after {
+  content: '▍';
+  margin-left: 2px;
+  animation: blink 1s steps(2) infinite;
+  color: #3370ff;
+}
+@keyframes blink { 50% { opacity: 0; } }
