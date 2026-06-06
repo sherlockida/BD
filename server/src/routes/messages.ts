@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import { eq, asc, and } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, messages, conversations } from '../db/index.js';
 import { v4 as uuid } from 'uuid';
+import { broadcastToConversation } from '../ws/wsServer.js';
 
 export const messagesRouter = Router({ mergeParams: false });
 
@@ -12,48 +13,53 @@ export const messagesRouter = Router({ mergeParams: false });
 messagesRouter.get('/:convId/messages', async (req, res) => {
   try {
     const { convId } = req.params;
-    const cursor = req.query.cursor as string | undefined;  // message id to start after
+    const cursor = req.query.cursor as string | undefined;
     const limit = Math.min(parseInt(req.query.limit as string ?? '50'), 200);
 
-    let query = db
-      .select()
-      .from(messages)
-      .where(eq(messages.conversationId, convId))
-      .orderBy(asc(messages.createdAt))
-      .limit(limit);
-
-    // Simple cursor-based pagination: if cursor provided, fetch messages created after it
+    // Use raw SQL — keep cursor as UUID, look up its timestamp via subquery
+    // so we don't lose microsecond precision through JS Date conversion.
+    let rows;
     if (cursor) {
-      // Subquery to get cursor message's timestamp
-      const cursorMsg = await db
-        .select({ createdAt: messages.createdAt })
-        .from(messages)
-        .where(eq(messages.id, cursor))
-        .limit(1);
-
-      if (cursorMsg[0]) {
-        query = db
-          .select()
-          .from(messages)
-          .where(
-            and(
-              eq(messages.conversationId, convId),
-              // Using createdAt > cursor timestamp (simplified cursor)
-              // In production, use (createdAt, id) tuple comparison
-            ),
-          )
-          .orderBy(asc(messages.createdAt))
-          .limit(limit);
-      }
+      const result = await db.execute(
+        sql`SELECT * FROM messages
+            WHERE conversation_id = ${convId}::uuid
+              AND created_at > (
+                SELECT created_at FROM messages WHERE id = ${cursor}::uuid LIMIT 1
+              )
+            ORDER BY created_at ASC
+            LIMIT ${limit}`,
+      );
+      rows = result.rows as any[];
+    } else {
+      const result = await db.execute(
+        sql`SELECT * FROM messages
+            WHERE conversation_id = ${convId}::uuid
+            ORDER BY created_at ASC
+            LIMIT ${limit}`,
+      );
+      rows = result.rows as any[];
     }
 
-    const rows = await query;
-    const nextCursor = rows.length === limit ? rows[rows.length - 1]?.id : null;
+    // Camel-case the snake_case PG columns to match the rest of the API
+    const formatted = rows.map(r => ({
+      id: r.id,
+      conversationId: r.conversation_id,
+      senderType: r.sender_type,
+      senderId: r.sender_id,
+      content: r.content,
+      mentions: r.mentions,
+      replyToMessageId: r.reply_to_message_id,
+      streaming: r.streaming,
+      pinned: r.pinned,
+      createdAt: r.created_at,
+    }));
+
+    const nextCursor = formatted.length === limit ? formatted[formatted.length - 1]?.id : null;
 
     res.json({
-      messages: rows,
+      messages: formatted,
       nextCursor,
-      hasMore: rows.length === limit,
+      hasMore: formatted.length === limit,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -65,6 +71,7 @@ messagesRouter.post('/:convId/messages', async (req, res) => {
   try {
     const { convId } = req.params;
     const {
+      id: clientId,
       senderType = 'user',
       senderId = 'user',
       content,
@@ -76,7 +83,7 @@ messagesRouter.post('/:convId/messages', async (req, res) => {
       return res.status(400).json({ error: 'content is required' });
     }
 
-    const id = uuid();
+    const id = clientId ?? uuid();
     const [msg] = await db
       .insert(messages)
       .values({
@@ -99,6 +106,13 @@ messagesRouter.post('/:convId/messages', async (req, res) => {
       .where(eq(conversations.id, convId))
       .execute()
       .catch(() => { /* best-effort */ });
+
+    // Broadcast new message to subscribers
+    broadcastToConversation(convId, {
+      type: 'message.new',
+      conversationId: convId,
+      message: msg,
+    });
 
     res.status(201).json(msg);
   } catch (err: any) {

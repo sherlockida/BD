@@ -21,11 +21,11 @@ skillsRouter.get('/', async (_req, res) => {
 // POST /api/skills — create a new skill
 skillsRouter.post('/', async (req, res) => {
   try {
-    const { name, triggerCondition, description, steps, source, conversationId } = req.body;
+    const { id: clientId, name, triggerCondition, description, steps, source, conversationId } = req.body;
     if (!name || !triggerCondition) {
       return res.status(400).json({ error: 'name and triggerCondition are required' });
     }
-    const id = uuid();
+    const id = clientId ?? uuid();
     const [skill] = await db
       .insert(skills)
       .values({

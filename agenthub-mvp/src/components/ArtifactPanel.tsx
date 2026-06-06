@@ -1,22 +1,24 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import Editor, { DiffEditor } from '@monaco-editor/react';
 import { useAppStore } from '../store/appStore';
 import type { Artifact, ArtifactVersion, ID } from '../types';
-import { diffLines } from '../utils/diff';
-import { DiffBody } from './DiffViewer';
 import {
-  X, Code2, Globe, FileText, History, Rocket, RotateCcw, Eye, GitBranch,
+  X, Code2, Globe, FileText, Rocket, RotateCcw, Eye, GitBranch,
   Layers, ChevronRight, Copy,
 } from './icons';
 
 type PanelTab = 'preview' | 'code' | 'diff' | 'history';
+
+const PANEL_MIN_WIDTH = 320;
+const PANEL_MAX_WIDTH = 1200;
+const PANEL_DEFAULT_WIDTH = 520;
+const PANEL_WIDTH_STORAGE_KEY = 'agenthub.artifactPanel.width';
 
 export function ArtifactPanel() {
   const open = useAppStore(s => s.artifactPanelOpen);
   const setOpen = useAppStore(s => s.setArtifactPanelOpen);
   const activeArtifactId = useAppStore(s => s.activeArtifactId);
   const activeConvId = useAppStore(s => s.activeConversationId);
-  // 选择稳定引用，再在组件内 useMemo 派生 — 避免选择器返回新数组导致 useSyncExternalStore 触发无限重渲染
   const allArtifacts = useAppStore(s => s.artifacts);
   const openArt = useAppStore(s => s.openArtifact);
   const rollback = useAppStore(s => s.rollbackArtifact);
@@ -38,10 +40,25 @@ export function ArtifactPanel() {
 
   const [tab, setTab] = useState<PanelTab>('preview');
   const [selectedVersionId, setSelectedVersionId] = useState<ID | null>(null);
+  const [userPinned, setUserPinned] = useState(false);
+  // Monaco selection — lifted up so SelectionRail can consume it
+  const [selectedCode, setSelectedCode] = useState('');
 
+  // (1) Switching artifact resets pin + jumps to latest
   useEffect(() => {
-    if (artifact) setSelectedVersionId(artifact.latestVersionId);
+    if (artifact) {
+      setSelectedVersionId(artifact.latestVersionId);
+      setUserPinned(false);
+      setSelectedCode('');
+    }
   }, [artifact?.id]);
+
+  // (2) New version on same artifact — auto-advance unless user manually pinned
+  useEffect(() => {
+    if (artifact && !userPinned) {
+      setSelectedVersionId(artifact.latestVersionId);
+    }
+  }, [artifact?.latestVersionId, userPinned]);
 
   if (!open) return null;
 
@@ -67,6 +84,19 @@ export function ArtifactPanel() {
           <ArtTypeIcon t={artifact.type} />
           <span className="truncate">{artifact.name}</span>
           <span className="text-xs text-feishu-subtext">v{version.version}</span>
+          {userPinned && version.id !== artifact.latestVersionId && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedVersionId(artifact.latestVersionId);
+                setUserPinned(false);
+              }}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 hover:bg-amber-200"
+              title="跳到最新版本"
+            >
+              查看最新 v{artifact.versions.length} ↑
+            </button>
+          )}
         </div>
       }
       onClose={() => setOpen(false)}
@@ -106,9 +136,9 @@ export function ArtifactPanel() {
 
       <div className="flex-1 overflow-hidden flex">
         {/* main */}
-        <div className="flex-1 overflow-y-auto bg-feishu-bg/30">
+        <div className="flex-1 overflow-y-auto bg-feishu-bg/30 min-w-0">
           {tab === 'preview' && <PreviewBody artifact={artifact} version={version} />}
-          {tab === 'code' && <CodeBody version={version} />}
+          {tab === 'code' && <CodeBody version={version} onSelectionChange={setSelectedCode} />}
           {tab === 'diff' && (
             prevVersion ? (
               <div className="h-full flex flex-col">
@@ -143,7 +173,11 @@ export function ArtifactPanel() {
           {tab === 'history' && (
             <HistoryBody
               artifact={artifact}
-              onPick={(v) => { setSelectedVersionId(v.id); setTab('preview'); }}
+              onPick={(v) => {
+                setSelectedVersionId(v.id);
+                setUserPinned(v.id !== artifact.latestVersionId);
+                setTab('preview');
+              }}
               onRollback={(v) => rollback(artifact.id, v.id)}
             />
           )}
@@ -154,6 +188,8 @@ export function ArtifactPanel() {
           <SelectionRail
             artifact={artifact}
             version={version}
+            selected={selectedCode}
+            onClearSelection={() => setSelectedCode('')}
             onSend={(text) => sendUser(conv.id, text, [], undefined, [artifact.id])}
             members={conv.memberAgentIds}
           />
@@ -164,13 +200,70 @@ export function ArtifactPanel() {
 }
 
 function Side({ title, children, onClose }: { title: React.ReactNode; children: React.ReactNode; onClose: () => void }) {
+  // Resizable width state with localStorage persistence
+  const [width, setWidth] = useState<number>(() => {
+    if (typeof window === 'undefined') return PANEL_DEFAULT_WIDTH;
+    const saved = window.localStorage?.getItem(PANEL_WIDTH_STORAGE_KEY);
+    const parsed = saved ? parseInt(saved, 10) : NaN;
+    return Number.isFinite(parsed) && parsed >= PANEL_MIN_WIDTH && parsed <= PANEL_MAX_WIDTH
+      ? parsed
+      : PANEL_DEFAULT_WIDTH;
+  });
+  const [resizing, setResizing] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Drag handlers — mousedown on the left edge starts a global mousemove/mouseup listener
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setResizing(true);
+    const startX = e.clientX;
+    const startWidth = containerRef.current?.getBoundingClientRect().width ?? width;
+
+    const handleMove = (ev: MouseEvent) => {
+      // Dragging the LEFT edge: moving mouse left makes panel wider, right makes it narrower
+      const delta = startX - ev.clientX;
+      const next = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, startWidth + delta));
+      setWidth(next);
+    };
+    const handleUp = () => {
+      setResizing(false);
+      document.removeEventListener('mousemove', handleMove);
+      document.removeEventListener('mouseup', handleUp);
+      // Persist final width
+      try {
+        window.localStorage?.setItem(PANEL_WIDTH_STORAGE_KEY, String(
+          containerRef.current?.getBoundingClientRect().width ?? PANEL_DEFAULT_WIDTH,
+        ));
+      } catch { /* ignore quota errors */ }
+    };
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('mouseup', handleUp);
+  }, [width]);
+
   return (
-    <div className="w-[520px] h-full bg-feishu-panel border-l border-feishu-border shrink-0 flex flex-col">
+    <div
+      ref={containerRef}
+      style={{ width: `${width}px` }}
+      className="h-full bg-feishu-panel border-l border-feishu-border shrink-0 flex flex-col relative"
+    >
+      {/* Drag handle — 4px strip on the left edge */}
+      <div
+        onMouseDown={handleResizeStart}
+        title="拖动调整宽度"
+        className={`absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-20 group ${
+          resizing ? 'bg-feishu-accent/40' : 'hover:bg-feishu-accent/30'
+        } transition-colors`}
+      >
+        <div className={`absolute inset-y-0 left-0 w-px ${resizing ? 'bg-feishu-accent' : 'bg-transparent group-hover:bg-feishu-accent/60'} transition-colors`} />
+      </div>
       <div className="h-14 px-5 border-b border-feishu-border flex items-center justify-between shrink-0">
         <div className="font-semibold text-feishu-text text-sm min-w-0">{title}</div>
         <button onClick={onClose} className="text-feishu-subtext hover:text-feishu-text"><X size={16} /></button>
       </div>
-      {children}
+      {/* While resizing, lock pointer events on inner content to prevent iframe stealing the mousemove */}
+      <div className={`flex-1 flex flex-col overflow-hidden ${resizing ? 'pointer-events-none select-none' : ''}`}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -183,9 +276,11 @@ function ArtTypeIcon({ t }: { t: Artifact['type'] }) {
 
 function PreviewBody({ artifact, version }: { artifact: Artifact; version: ArtifactVersion }) {
   if (artifact.type === 'webpage') {
-    // CSP-protected sandbox: allow scripts (for interactive previews) but block network, popups, top-navigation
+    // CSP-protected sandbox: allow scripts but block network/popups/top-navigation.
+    // key={version.id} forces React to remount iframe so srcDoc surely refreshes
     return (
       <iframe
+        key={version.id}
         title="preview"
         className="w-full h-full bg-white border-0"
         sandbox="allow-scripts"
@@ -206,7 +301,13 @@ function PreviewBody({ artifact, version }: { artifact: Artifact; version: Artif
   return <CodeBody version={version} />;
 }
 
-function CodeBody({ version }: { version: ArtifactVersion }) {
+function CodeBody({
+  version,
+  onSelectionChange,
+}: {
+  version: ArtifactVersion;
+  onSelectionChange?: (text: string) => void;
+}) {
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(version.content);
   }, [version.content]);
@@ -236,6 +337,16 @@ function CodeBody({ version }: { version: ArtifactVersion }) {
           language={language}
           value={version.content}
           theme="vs-dark"
+          onMount={(editor) => {
+            // Wire Monaco selection events to the rail's selection state
+            if (!onSelectionChange) return;
+            editor.onDidChangeCursorSelection((e) => {
+              const model = editor.getModel();
+              if (!model) return;
+              const text = model.getValueInRange(e.selection);
+              onSelectionChange(text);
+            });
+          }}
           options={{
             readOnly: true,
             minimap: { enabled: false },
@@ -304,37 +415,44 @@ function formatTs(ts: number) {
 }
 
 function SelectionRail({
-  artifact, version, onSend, members,
+  artifact, version, selected, onClearSelection, onSend, members,
 }: {
   artifact: Artifact;
   version: ArtifactVersion;
+  selected: string;
+  onClearSelection: () => void;
   onSend: (text: string) => void;
   members: ID[];
 }) {
   const agents = useAppStore(s => s.agents);
-  const [selected, setSelected] = useState('');
   const [target, setTarget] = useState<ID>(() => members.find(id => id !== 'agent_orchestrator') ?? members[0]);
   const [instruction, setInstruction] = useState('');
 
-  useEffect(() => {
-    const onSel = () => {
-      const sel = window.getSelection?.()?.toString().trim() ?? '';
-      if (sel) setSelected(sel);
-    };
-    document.addEventListener('mouseup', onSel);
-    return () => document.removeEventListener('mouseup', onSel);
-  }, []);
+  const hasSelection = selected.trim().length > 0;
+  const trimmedSelection = selected.trim();
 
   return (
-    <div className="w-56 border-l border-feishu-border bg-feishu-panel flex flex-col">
+    <div className="w-56 border-l border-feishu-border bg-feishu-panel flex flex-col shrink-0">
       <div className="px-3 py-2.5 border-b border-feishu-border text-xs font-medium text-feishu-text flex items-center gap-1.5">
         <Layers size={12} /> 选区操作
       </div>
-      <div className="p-3 space-y-2 text-xs flex-1">
+      <div className="p-3 space-y-2 text-xs flex-1 overflow-y-auto">
         <div>
-          <div className="text-feishu-subtext mb-1">已选片段</div>
-          <div className="bg-feishu-bg p-2 rounded text-feishu-text whitespace-pre-wrap line-clamp-4 min-h-[60px]">
-            {selected || <span className="text-feishu-subtext italic">在左侧框选一段文字...</span>}
+          <div className="text-feishu-subtext mb-1 flex items-center justify-between">
+            <span>已选片段{hasSelection && ` (${trimmedSelection.length} 字符)`}</span>
+            {hasSelection && (
+              <button
+                type="button"
+                onClick={onClearSelection}
+                className="text-feishu-subtext hover:text-feishu-text"
+                title="清除选区"
+              >
+                <X size={10} />
+              </button>
+            )}
+          </div>
+          <div className="bg-feishu-bg p-2 rounded text-feishu-text whitespace-pre-wrap line-clamp-6 min-h-[60px] max-h-32 overflow-auto font-mono text-[11px]">
+            {hasSelection ? trimmedSelection : <span className="text-feishu-subtext italic font-sans">在左侧 Code Tab 中用鼠标框选一段代码...</span>}
           </div>
         </div>
         <div>
@@ -357,7 +475,7 @@ function SelectionRail({
             rows={3}
             value={instruction}
             onChange={e => setInstruction(e.target.value)}
-            placeholder="例：把这里改成抹茶绿"
+            placeholder={hasSelection ? '例：把这里改成抹茶绿' : '先在左边选段代码，再写你想怎么改'}
             className="w-full px-2 py-1.5 bg-feishu-bg border border-feishu-border rounded focus:outline-none focus:border-feishu-accent resize-none"
           />
         </div>
@@ -365,9 +483,13 @@ function SelectionRail({
           onClick={() => {
             if (!instruction) return;
             const a = agents.find(x => x.id === target);
-            const text = `@${a?.name ?? '某 Agent'} 针对 \`${artifact.name}\` v${version.version} 的这段内容：\n\n> ${selected.slice(0, 200)}\n\n${instruction}`;
+            const selectionBlock = hasSelection
+              ? `\n\n选区内容（来自 v${version.version}）:\n\`\`\`\n${trimmedSelection.slice(0, 800)}\n\`\`\`\n`
+              : '\n\n（未选中具体片段，请基于整份产物理解）\n';
+            const text = `@${a?.name ?? '某 Agent'} 针对产物 \`${artifact.name}\` ${selectionBlock}\n指令：${instruction}`;
             onSend(text);
             setInstruction('');
+            onClearSelection();
           }}
           disabled={!instruction}
           className="w-full py-1.5 bg-feishu-accent text-white rounded text-xs disabled:opacity-40 hover:opacity-90 flex items-center justify-center gap-1"

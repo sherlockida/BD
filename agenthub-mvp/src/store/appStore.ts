@@ -1,5 +1,18 @@
 import { create } from 'zustand';
-import { createCustomAgent as apiCreateCustomAgent } from '../api/client';
+import {
+  createCustomAgent as apiCreateCustomAgent,
+  createConversation as apiCreateConversation,
+  postMessage as apiPostMessage,
+  createArtifact as apiCreateArtifact,
+  addArtifactVersion as apiAddArtifactVersion,
+  rollbackArtifact as apiRollbackArtifact,
+  createSkill as apiCreateSkill,
+  listConversations as apiListConversations,
+  listMessages as apiListMessages,
+  listArtifacts as apiListArtifacts,
+  getArtifact as apiGetArtifact,
+  listSkills as apiListSkills,
+} from '../api/client';
 import type {
   Conversation,
   Message,
@@ -14,7 +27,7 @@ import type {
   ArtifactType,
   DeployStatus,
 } from '../types';
-import { uid, sleep } from '../utils/id';
+import { uid, sleep, genUuid } from '../utils/id';
 import { diffLines } from '../utils/diff';
 import { agentRegistry } from '../agents/registry';
 import { planTasks, schedule, summarize, ORCHESTRATOR_META } from '../orchestrator';
@@ -37,6 +50,8 @@ interface AppState {
   artifactPanelOpen: boolean;
   agentMarketOpen: boolean;
   skillsDrawerOpen: boolean;
+  newAgentModalOpen: boolean;
+  newAgentPrefill: string;
   conflictModal: null | { artifactId: ID; baseVersionId: ID; theirVersionId: ID };
 
   // ── Actions: conversations ──
@@ -48,6 +63,7 @@ interface AppState {
   openArtifact(id: ID): void;
   setAgentMarketOpen(open: boolean): void;
   setSkillsDrawerOpen(open: boolean): void;
+  setNewAgentModalOpen(open: boolean, prefill?: string): void;
 
   // ── Actions: agents ──
   createCustomAgent(opts: {
@@ -74,6 +90,9 @@ interface AppState {
   // ── Actions: skill ──
   distillSkill(opts: { name: string; trigger: string; description: string; steps: string[]; conversationId?: ID }): Skill;
   removeSkill(id: ID): void;
+
+  // ── Actions: hydration ──
+  hydrateFromBackend(): Promise<void>;
 }
 
 // ── 内部：addMessage 工具 ──
@@ -113,12 +132,12 @@ export const useAppStore = create<AppState>((set, get) => {
     ORCHESTRATOR_META,
     ...agentRegistry.allMeta(),
   ];
-  const demoConvId = uid('conv');
-  const demoGroupConvId = uid('conv');
+  const demoConvId = genUuid();
+  const demoGroupConvId = genUuid();
 
   const welcomeMsgs: Message[] = [
     {
-      id: uid('msg'),
+      id: genUuid(),
       conversationId: demoConvId,
       senderType: 'system',
       senderId: 'system',
@@ -152,7 +171,7 @@ export const useAppStore = create<AppState>((set, get) => {
       [demoConvId]: welcomeMsgs,
       [demoGroupConvId]: [
         {
-          id: uid('msg'),
+          id: genUuid(),
           conversationId: demoGroupConvId,
           senderType: 'system',
           senderId: 'system',
@@ -165,7 +184,7 @@ export const useAppStore = create<AppState>((set, get) => {
     artifacts: [],
     skills: [
       {
-        id: uid('skill'),
+        id: genUuid(),
         name: '先 Spec 后 Code',
         trigger: '当任务包含"做一个 / 实现 / 开发"时',
         description: '在编码前先输出 Spec（背景/目标/验收标准），用户 Review 后再 Code，可减少 60% 返工。',
@@ -174,7 +193,7 @@ export const useAppStore = create<AppState>((set, get) => {
         source: 'manual',
       },
       {
-        id: uid('skill'),
+        id: genUuid(),
         name: '冲突自动 3-way merge',
         trigger: '当两个 agent 修改同一产物',
         description: '对同一文件出现两路并发修改时，由 base / mine / theirs 三方做 3-way merge，失败再弹冲突 UI。',
@@ -189,11 +208,13 @@ export const useAppStore = create<AppState>((set, get) => {
     artifactPanelOpen: false,
     agentMarketOpen: false,
     skillsDrawerOpen: false,
+    newAgentModalOpen: false,
+    newAgentPrefill: '',
     conflictModal: null,
 
     // ─────────────────────────────────────────────────────
     createConversation({ type, memberAgentIds, title }) {
-      const id = uid('conv');
+      const id = genUuid();   // real UUID — accepted by both frontend & backend
       // 群聊默认带 PMO
       let members = [...memberAgentIds];
       if (type === 'group' && !members.includes('agent_orchestrator')) {
@@ -219,7 +240,7 @@ export const useAppStore = create<AppState>((set, get) => {
           ...s.messagesByConv,
           [id]: [
             {
-              id: uid('msg'),
+              id: genUuid(),
               conversationId: id,
               senderType: 'system',
               senderId: 'system',
@@ -236,6 +257,9 @@ export const useAppStore = create<AppState>((set, get) => {
         },
         activeConversationId: id,
       }));
+      // Persist to backend with our UUID — no ID swap needed
+      apiCreateConversation({ type, title: titleAuto, memberAgentIds: members, id } as any)
+        .catch(err => console.warn('[persist] createConversation failed:', err.message));
       return conv;
     },
 
@@ -287,6 +311,9 @@ export const useAppStore = create<AppState>((set, get) => {
     setSkillsDrawerOpen(open) {
       set({ skillsDrawerOpen: open });
     },
+    setNewAgentModalOpen(open, prefill) {
+      set({ newAgentModalOpen: open, newAgentPrefill: prefill ?? '' });
+    },
 
     // ─────────────────────────────────────────────────────
     createCustomAgent(opts) {
@@ -316,7 +343,7 @@ export const useAppStore = create<AppState>((set, get) => {
           [convId]: [
             ...(s.messagesByConv[convId] ?? []),
             {
-              id: uid('msg'),
+              id: genUuid(),
               conversationId: convId,
               senderType: 'system',
               senderId: 'system',
@@ -342,7 +369,7 @@ export const useAppStore = create<AppState>((set, get) => {
     // ─────────────────────────────────────────────────────
     async sendUserMessage(convId, text, mentions, replyToMessageId, attachedArtifactIds) {
       const userMsg: Message = {
-        id: uid('msg'),
+        id: genUuid(),
         conversationId: convId,
         senderType: 'user',
         senderId: 'user',
@@ -352,6 +379,16 @@ export const useAppStore = create<AppState>((set, get) => {
         createdAt: Date.now(),
       };
       set(s => addMsg(s, convId, userMsg));
+
+      // Persist user message (fire-and-forget)
+      apiPostMessage(convId, {
+        id: userMsg.id,
+        senderType: 'user',
+        senderId: 'user',
+        content: userMsg.content,
+        mentions,
+        replyToMessageId,
+      } as any).catch(err => console.warn('[persist] user message failed:', err.message));
 
       const conv = get().conversations.find(c => c.id === convId);
       if (!conv) return;
@@ -399,7 +436,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const arg = cmd.replace(/^\/spec\s*/, '') || '请描述你的需求';
         set(s =>
           addMsg(s, convId, {
-            id: uid('msg'),
+            id: genUuid(),
             conversationId: convId,
             senderType: 'agent',
             senderId: 'agent_orchestrator',
@@ -421,14 +458,10 @@ export const useAppStore = create<AppState>((set, get) => {
         return;
       }
       if (cmd.startsWith('/new-agent')) {
-        const arg = cmd.replace(/^\/new-agent\s*/, '');
-        const meta = get().createCustomAgent({
-          name: arg.slice(0, 16) || '我的助手',
-          tagline: arg || '用户自建 Agent',
-          capabilities: ['code', 'doc'],
-          systemPrompt: `你是「${arg}」，请按这个角色回复用户。`,
-        });
-        get().addAgentToConversation(convId, meta.id);
+        const arg = cmd.replace(/^\/new-agent\s*/, '').trim();
+        // Open modal pre-filled with the slash arg as a name hint;
+        // user fills in tagline/capabilities/avatar/systemPrompt and confirms
+        get().setNewAgentModalOpen(true, arg);
         return;
       }
       if (cmd.startsWith('/deploy')) {
@@ -438,7 +471,7 @@ export const useAppStore = create<AppState>((set, get) => {
         if (!target) {
           set(s =>
             addMsg(s, convId, {
-              id: uid('msg'),
+              id: genUuid(),
               conversationId: convId,
               senderType: 'system',
               senderId: 'system',
@@ -454,7 +487,7 @@ export const useAppStore = create<AppState>((set, get) => {
       // 未知命令
       set(s =>
         addMsg(s, convId, {
-          id: uid('msg'),
+          id: genUuid(),
           conversationId: convId,
           senderType: 'system',
           senderId: 'system',
@@ -471,7 +504,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const ver = art.versions.find(v => v.id === versionId);
       if (!ver) return;
       const newVer: ArtifactVersion = {
-        id: uid('ver'),
+        id: genUuid(),
         artifactId,
         version: art.versions.length + 1,
         content: ver.content,
@@ -486,10 +519,14 @@ export const useAppStore = create<AppState>((set, get) => {
           latestVersionId: newVer.id,
         }),
       );
+
+      // Persist rollback to DB (server creates the new version with the target version's content)
+      apiRollbackArtifact(artifactId, versionId)
+        .catch(err => console.warn('[persist] rollbackArtifact failed:', err.message));
       // 在对应对话里追加一条系统消息
       set(s =>
         addMsg(s, art.conversationId, {
-          id: uid('msg'),
+          id: genUuid(),
           conversationId: art.conversationId,
           senderType: 'system',
           senderId: 'system',
@@ -508,7 +545,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!art) return;
       const deployId = uid('deploy');
       const msg: Message = {
-        id: uid('msg'),
+        id: genUuid(),
         conversationId: convId,
         senderType: 'agent',
         senderId: 'agent_open_code',
@@ -564,7 +601,7 @@ export const useAppStore = create<AppState>((set, get) => {
       // 沉淀 candidate skill
       set(s =>
         addMsg(s, convId, {
-          id: uid('msg'),
+          id: genUuid(),
           conversationId: convId,
           senderType: 'agent',
           senderId: 'agent_orchestrator',
@@ -582,7 +619,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
     distillSkill(opts) {
       const sk: Skill = {
-        id: uid('skill'),
+        id: genUuid(),
         name: opts.name,
         trigger: opts.trigger,
         description: opts.description,
@@ -592,11 +629,123 @@ export const useAppStore = create<AppState>((set, get) => {
         conversationId: opts.conversationId,
       };
       set(s => ({ skills: [sk, ...s.skills] }));
+
+      // Persist to DB (note: server schema uses triggerCondition, not trigger)
+      apiCreateSkill({
+        name: sk.name,
+        triggerCondition: sk.trigger,
+        description: sk.description,
+        steps: sk.steps,
+        source: 'auto-distilled',
+        conversationId: opts.conversationId,
+        id: sk.id,
+      } as any).catch(err => console.warn('[persist] distillSkill failed:', err.message));
+
       return sk;
     },
 
     removeSkill(id) {
       set(s => ({ skills: s.skills.filter(x => x.id !== id) }));
+    },
+
+    // ─────────────────────────────────────────────────────
+    // Hydration — pull existing data from backend on app mount
+    async hydrateFromBackend() {
+      try {
+        const [serverConvs, serverArts, serverSkills] = await Promise.all([
+          apiListConversations().catch(() => []),
+          apiListArtifacts().catch(() => []),
+          apiListSkills().catch(() => []),
+        ]);
+
+        if (!serverConvs || serverConvs.length === 0) {
+          console.log('[hydrate] no conversations on backend, keeping local demo state');
+          return;
+        }
+
+        // Map server conversations to local format
+        const convs: Conversation[] = serverConvs.map(c => ({
+          id: c.id,
+          type: c.type as 'single' | 'group',
+          title: c.title,
+          memberAgentIds: c.memberAgentIds ?? [],
+          pinnedMessageIds: c.pinnedMessageIds ?? [],
+          archived: !!c.archived,
+          lastActivityAt: new Date(c.lastActivityAt).getTime(),
+          unread: 0,
+        }));
+
+        // Fetch messages for each conversation in parallel
+        const messagesEntries = await Promise.all(
+          convs.map(async c => {
+            const r = await apiListMessages(c.id).catch(() => ({ messages: [] }));
+            const msgs: Message[] = (r.messages ?? []).map(m => ({
+              id: m.id,
+              conversationId: m.conversationId,
+              senderType: m.senderType,
+              senderId: m.senderId,
+              content: m.content as any,
+              mentions: m.mentions ?? [],
+              replyToMessageId: m.replyToMessageId ?? undefined,
+              streaming: false,
+              pinned: !!m.pinned,
+              createdAt: new Date(m.createdAt).getTime(),
+            }));
+            return [c.id, msgs] as const;
+          }),
+        );
+
+        // Hydrate artifacts (full version chains)
+        const artsFull = await Promise.all(
+          serverArts.map(async a => {
+            const full = await apiGetArtifact(a.id).catch(() => null);
+            if (!full) return null;
+            const art: Artifact = {
+              id: full.id,
+              conversationId: full.conversationId ?? '',
+              type: full.type as ArtifactType,
+              name: full.name,
+              language: full.language ?? undefined,
+              latestVersionId: full.latestVersionId ?? '',
+              versions: (full.versions ?? []).map(v => ({
+                id: v.id,
+                artifactId: v.artifactId,
+                version: v.version,
+                content: v.content,
+                authorAgentId: v.authorAgentId,
+                commitMessage: v.commitMessage,
+                createdAt: new Date(v.createdAt).getTime(),
+              })),
+              createdBy: full.createdBy ?? 'unknown',
+              createdAt: new Date(full.createdAt).getTime(),
+            };
+            return art;
+          }),
+        );
+
+        const skillsLocal: Skill[] = serverSkills.map(s => ({
+          id: s.id,
+          name: s.name,
+          trigger: s.triggerCondition,
+          description: s.description ?? '',
+          steps: s.steps ?? [],
+          createdAt: new Date(s.createdAt).getTime(),
+          source: (s.source as 'manual' | 'auto-distilled') ?? 'manual',
+          conversationId: s.conversationId ?? undefined,
+        }));
+
+        set(s => ({
+          conversations: convs.sort((a, b) => b.lastActivityAt - a.lastActivityAt),
+          messagesByConv: Object.fromEntries(messagesEntries),
+          artifacts: artsFull.filter(Boolean) as Artifact[],
+          skills: skillsLocal.length > 0 ? skillsLocal : s.skills,
+          activeConversationId: convs[0]?.id ?? null,
+        }));
+
+        console.log(`[hydrate] loaded ${convs.length} conversations, ${artsFull.length} artifacts, ${skillsLocal.length} skills`);
+      } catch (err: any) {
+        console.warn('[hydrate] failed:', err.message);
+      }
     },
   };
 });
@@ -624,7 +773,7 @@ async function runSingleAgent(
   if (!agent) return;
 
   // 创建一条流式 agent 消息
-  const msgId = uid('msg');
+  const msgId = genUuid();
   const agentMsg: Message = {
     id: msgId,
     conversationId: convId,
@@ -654,6 +803,17 @@ async function runSingleAgent(
     return;
   }
   set(s => patchMsg(s, convId, msgId, m => ({ ...m, streaming: false })));
+
+  // Persist final agent message to DB (fire-and-forget)
+  const finalMsg = get().messagesByConv[convId]?.find(m => m.id === msgId);
+  if (finalMsg && finalMsg.content.kind === 'text' && finalMsg.content.text) {
+    apiPostMessage(convId, {
+      id: finalMsg.id,
+      senderType: 'agent',
+      senderId: agentId,
+      content: finalMsg.content,
+    } as any).catch(err => console.warn('[persist] agent message failed:', err.message));
+  }
 }
 
 async function runOrchestrated(get: GetState, set: SetState, convId: ID, userText: string): Promise<void> {
@@ -667,7 +827,7 @@ async function runOrchestrated(get: GetState, set: SetState, convId: ID, userTex
 
   // 2) PMO 在群里发一条 plan card
   const planMsg: Message = {
-    id: uid('msg'),
+    id: genUuid(),
     conversationId: convId,
     senderType: 'agent',
     senderId: 'agent_orchestrator',
@@ -686,7 +846,7 @@ async function runOrchestrated(get: GetState, set: SetState, convId: ID, userTex
       onTaskStart(task: SubTask) {
         // 为这个任务创建一条流式 agent 消息
         const m: Message = {
-          id: uid('msg'),
+          id: genUuid(),
           conversationId: convId,
           senderType: 'agent',
           senderId: task.assignedAgentId,
@@ -730,7 +890,7 @@ async function runOrchestrated(get: GetState, set: SetState, convId: ID, userTex
         // 系统消息
         set(s =>
           addMsg(s, convId, {
-            id: uid('msg'),
+            id: genUuid(),
             conversationId: convId,
             senderType: 'system',
             senderId: 'system',
@@ -760,7 +920,7 @@ async function runOrchestrated(get: GetState, set: SetState, convId: ID, userTex
   const summary = summarize(planAfter);
   set(s =>
     addMsg(s, convId, {
-      id: uid('msg'),
+      id: genUuid(),
       conversationId: convId,
       senderType: 'agent',
       senderId: 'agent_orchestrator',
@@ -834,7 +994,7 @@ function handleChunkInto(
     // 把 code 作为单独一条新消息追加
     set(s =>
       addMsg(s, convId, {
-        id: uid('msg'),
+        id: genUuid(),
         conversationId: convId,
         senderType: 'agent',
         senderId: agentId,
@@ -853,7 +1013,7 @@ function handleChunkInto(
     let artifact: Artifact;
     if (existing) {
       const newVer: ArtifactVersion = {
-        id: uid('ver'),
+        id: genUuid(),
         artifactId: existing.id,
         version: existing.versions.length + 1,
         content: chunk.content,
@@ -864,11 +1024,19 @@ function handleChunkInto(
       const updated: Artifact = { ...existing, versions: [...existing.versions, newVer], latestVersionId: newVer.id };
       set(s => upsertArtifact(s, updated));
       artifact = updated;
+
+      // Persist new artifact version to DB
+      apiAddArtifactVersion(existing.id, {
+        id: newVer.id,
+        content: newVer.content,
+        authorAgentId: newVer.authorAgentId,
+        commitMessage: newVer.commitMessage,
+      } as any).catch(err => console.warn('[persist] artifact version failed:', err.message));
       // 同步发 diff card
       const prev = existing.versions[existing.versions.length - 1];
       set(s =>
         addMsg(s, convId, {
-          id: uid('msg'),
+          id: genUuid(),
           conversationId: convId,
           senderType: 'agent',
           senderId: agentId,
@@ -885,8 +1053,8 @@ function handleChunkInto(
         }),
       );
     } else {
-      const artId = uid('art');
-      const verId = uid('ver');
+      const artId = genUuid();
+      const verId = genUuid();
       artifact = {
         id: artId,
         conversationId: convId,
@@ -909,11 +1077,24 @@ function handleChunkInto(
         createdAt: Date.now(),
       };
       set(s => upsertArtifact(s, artifact));
+
+      // Persist new artifact + initial version to DB
+      apiCreateArtifact({
+        id: artId,
+        versionId: verId,
+        conversationId: convId,
+        type: chunk.artifactType,
+        name: chunk.name,
+        language: chunk.language,
+        content: chunk.content,
+        authorAgentId: agentId,
+        commitMessage: chunk.commitMessage,
+      } as any).catch(err => console.warn('[persist] artifact create failed:', err.message));
     }
     // artifact card
     set(s =>
       addMsg(s, convId, {
-        id: uid('msg'),
+        id: genUuid(),
         conversationId: convId,
         senderType: 'agent',
         senderId: agentId,

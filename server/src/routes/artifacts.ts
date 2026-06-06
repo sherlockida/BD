@@ -2,8 +2,26 @@ import { Router } from 'express';
 import { eq, desc } from 'drizzle-orm';
 import { db, artifacts, artifactVersions } from '../db/index.js';
 import { v4 as uuid } from 'uuid';
+import { broadcastToConversation } from '../ws/wsServer.js';
 
 export const artifactsRouter = Router();
+
+// GET /api/artifacts — list artifacts, filterable by conversationId
+artifactsRouter.get('/', async (req, res) => {
+  try {
+    const { conversationId } = req.query;
+    const rows = conversationId
+      ? await db
+          .select()
+          .from(artifacts)
+          .where(eq(artifacts.conversationId, conversationId as string))
+          .orderBy(desc(artifacts.createdAt))
+      : await db.select().from(artifacts).orderBy(desc(artifacts.createdAt));
+    res.json(rows);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // GET /api/artifacts/:id — get artifact with all versions
 artifactsRouter.get('/:id', async (req, res) => {
@@ -46,15 +64,29 @@ artifactsRouter.get('/:id/versions', async (req, res) => {
 // POST /api/artifacts — create artifact with initial version
 artifactsRouter.post('/', async (req, res) => {
   try {
-    const { conversationId, type, name, language, content, authorAgentId, commitMessage } = req.body;
+    const { id: clientArtId, versionId: clientVerId, conversationId, type, name, language, content, authorAgentId, commitMessage } = req.body;
     if (!type || !name || !content) {
       return res.status(400).json({ error: 'type, name, and content are required' });
     }
 
-    const artId = uuid();
-    const verId = uuid();
+    const artId = clientArtId ?? uuid();
+    const verId = clientVerId ?? uuid();
 
-    // Insert initial version first
+    // Insert artifact FIRST (parent), then version (child). FK requires parent to exist.
+    // latestVersionId temporarily null; we set it right after inserting the version.
+    const [artifact] = await db
+      .insert(artifacts)
+      .values({
+        id: artId,
+        conversationId: conversationId ?? null,
+        type,
+        name,
+        language: language ?? null,
+        latestVersionId: null,
+        createdBy: authorAgentId ?? 'unknown',
+      })
+      .returning();
+
     const [version] = await db
       .insert(artifactVersions)
       .values({
@@ -67,21 +99,22 @@ artifactsRouter.post('/', async (req, res) => {
       })
       .returning();
 
-    // Insert artifact
-    const [artifact] = await db
-      .insert(artifacts)
-      .values({
-        id: artId,
-        conversationId: conversationId ?? null,
-        type,
-        name,
-        language: language ?? null,
-        latestVersionId: verId,
-        createdBy: authorAgentId ?? 'unknown',
-      })
-      .returning();
+    // Backfill latestVersionId now that the version exists
+    await db
+      .update(artifacts)
+      .set({ latestVersionId: verId })
+      .where(eq(artifacts.id, artId));
 
-    res.status(201).json({ ...artifact, versions: [version] });
+    res.status(201).json({ ...artifact, latestVersionId: verId, versions: [version] });
+
+    // Broadcast new artifact creation
+    if (artifact?.conversationId) {
+      broadcastToConversation(artifact.conversationId, {
+        type: 'artifact.new_version',
+        artifactId: artifact.id,
+        version,
+      });
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -91,7 +124,7 @@ artifactsRouter.post('/', async (req, res) => {
 artifactsRouter.post('/:id/versions', async (req, res) => {
   try {
     const artifactId = req.params.id;
-    const { content, authorAgentId, commitMessage } = req.body;
+    const { id: clientVerId, content, authorAgentId, commitMessage } = req.body;
     if (!content) return res.status(400).json({ error: 'content is required' });
 
     const [artifact] = await db
@@ -111,7 +144,7 @@ artifactsRouter.post('/:id/versions', async (req, res) => {
       .limit(1);
 
     const nextVersion = (latestVer?.version ?? 0) + 1;
-    const verId = uuid();
+    const verId = clientVerId ?? uuid();
 
     const [newVer] = await db
       .insert(artifactVersions)
@@ -132,6 +165,15 @@ artifactsRouter.post('/:id/versions', async (req, res) => {
       .where(eq(artifacts.id, artifactId));
 
     res.status(201).json(newVer);
+
+    // Broadcast new version to subscribers
+    if (artifact.conversationId) {
+      broadcastToConversation(artifact.conversationId, {
+        type: 'artifact.new_version',
+        artifactId,
+        version: newVer,
+      });
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

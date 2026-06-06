@@ -40,7 +40,7 @@ conversationsRouter.get('/:id', async (req, res) => {
 // POST /api/conversations — create new conversation
 conversationsRouter.post('/', async (req, res) => {
   try {
-    const { type, title, memberAgentIds, projectId } = req.body;
+    const { id: clientId, type, title, memberAgentIds, projectId } = req.body;
     if (!type || !title) {
       return res.status(400).json({ error: 'type and title are required' });
     }
@@ -49,7 +49,7 @@ conversationsRouter.post('/', async (req, res) => {
     if (type === 'group' && !members.includes('agent_orchestrator')) {
       members = ['agent_orchestrator', ...members];
     }
-    const id = uuid();
+    const id = clientId ?? uuid();
     const [row] = await db
       .insert(conversations)
       .values({

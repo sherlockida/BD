@@ -80,6 +80,7 @@ export async function listMessages(
 export async function postMessage(
   convId: string,
   body: {
+    id?: string;
     senderType?: 'user' | 'agent';
     senderId?: string;
     content: Record<string, unknown>;
@@ -125,6 +126,123 @@ export async function createCustomAgent(body: {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Failed to create custom agent: ${res.status}`);
+  return res.json();
+}
+
+// ── Artifacts ──
+export interface ArtifactDTO {
+  id: string;
+  conversationId: string | null;
+  type: string;
+  name: string;
+  language: string | null;
+  latestVersionId: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  versions?: ArtifactVersionDTO[];
+}
+
+export interface ArtifactVersionDTO {
+  id: string;
+  artifactId: string;
+  version: number;
+  content: string;
+  authorAgentId: string;
+  commitMessage: string;
+  createdAt: string;
+}
+
+export async function listArtifacts(conversationId?: string): Promise<ArtifactDTO[]> {
+  const url = conversationId
+    ? `${API_BASE}/artifacts?conversationId=${encodeURIComponent(conversationId)}`
+    : `${API_BASE}/artifacts`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getArtifact(id: string): Promise<ArtifactDTO | null> {
+  const res = await fetch(`${API_BASE}/artifacts/${id}`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function createArtifact(body: {
+  id?: string;
+  versionId?: string;
+  conversationId?: string;
+  type: string;
+  name: string;
+  language?: string;
+  content: string;
+  authorAgentId: string;
+  commitMessage: string;
+}): Promise<ArtifactDTO> {
+  const res = await fetch(`${API_BASE}/artifacts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Failed to create artifact: ${res.status}`);
+  return res.json();
+}
+
+export async function addArtifactVersion(
+  artifactId: string,
+  body: { id?: string; content: string; authorAgentId: string; commitMessage: string },
+): Promise<ArtifactVersionDTO> {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/versions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Failed to add version: ${res.status}`);
+  return res.json();
+}
+
+export async function rollbackArtifact(artifactId: string, versionId: string): Promise<ArtifactVersionDTO> {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/rollback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ versionId }),
+  });
+  if (!res.ok) throw new Error(`Failed to rollback: ${res.status}`);
+  return res.json();
+}
+
+// ── Skills ──
+export interface SkillDTO {
+  id: string;
+  name: string;
+  triggerCondition: string;
+  description: string | null;
+  steps: string[] | null;
+  source: string;
+  conversationId: string | null;
+  createdAt: string;
+}
+
+export async function listSkills(): Promise<SkillDTO[]> {
+  const res = await fetch(`${API_BASE}/skills`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function createSkill(body: {
+  id?: string;
+  name: string;
+  triggerCondition: string;
+  description?: string;
+  steps?: string[];
+  source?: string;
+  conversationId?: string;
+}): Promise<SkillDTO> {
+  const res = await fetch(`${API_BASE}/skills`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Failed to create skill: ${res.status}`);
   return res.json();
 }
 

@@ -1,8 +1,27 @@
-// Tiny id helpers (UUID-ish, enough for client-side state)
+// Tiny id helpers
+//
+// Two flavours:
+//   uid(prefix?)  — prefixed timestamp+random, for UI-only state keys
+//   genUuid()     — real RFC4122 v4 UUID, required when the object is persisted
+//                   to PostgreSQL (whose columns are uuid-typed)
 export const uid = (prefix = ''): string => {
   const rand = Math.random().toString(36).slice(2, 10);
   const ts = Date.now().toString(36);
   return prefix ? `${prefix}_${ts}_${rand}` : `${ts}_${rand}`;
+};
+
+export const genUuid = (): string => {
+  // Native browser crypto API — available since Chrome 92 / Firefox 95 / Safari 15.4
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback: RFC 4122 v4 polyfill using getRandomValues
+  const bytes = new Uint8Array(16);
+  (crypto ?? (window as any).msCrypto).getRandomValues(bytes);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
 export const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
