@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { createCustomAgent as apiCreateCustomAgent } from '../api/client';
 import type {
   Conversation,
   Message,
@@ -291,6 +292,15 @@ export const useAppStore = create<AppState>((set, get) => {
     createCustomAgent(opts) {
       const meta = agentRegistry.createCustom(opts);
       set(s => ({ agents: [...s.agents, meta] }));
+      // Persist to backend (fire-and-forget, doesn't block UI)
+      apiCreateCustomAgent({
+        name: opts.name,
+        tagline: opts.tagline,
+        capabilities: opts.capabilities,
+        systemPrompt: opts.systemPrompt,
+        avatarEmoji: opts.avatarEmoji,
+        avatarColor: opts.avatarColor,
+      }).catch(e => console.warn('[AgentHub] Failed to persist custom agent to backend:', e));
       return meta;
     },
 
@@ -778,6 +788,22 @@ function updatePlanCard(
   );
 }
 
+// ── 流式文字缓冲器：累积 text delta 批量更新，减少 Zustand re-render ──
+const textBuffer = new Map<ID, string>();
+let flushScheduled = false;
+
+function flushTextBuffer(set: SetState, convId: ID, msgId: ID) {
+  const delta = textBuffer.get(msgId);
+  if (delta === undefined || delta === '') return;
+  textBuffer.delete(msgId);
+  set(s =>
+    patchMsg(s, convId, msgId, m => {
+      if (m.content.kind !== 'text') return m;
+      return { ...m, content: { kind: 'text', text: m.content.text + delta } };
+    }),
+  );
+}
+
 function handleChunkInto(
   get: GetState,
   set: SetState,
@@ -788,13 +814,23 @@ function handleChunkInto(
   task?: SubTask,
 ): void {
   if (chunk.type === 'text') {
-    set(s =>
-      patchMsg(s, convId, msgId, m => {
-        if (m.content.kind !== 'text') return m;
-        return { ...m, content: { kind: 'text', text: m.content.text + chunk.delta } };
-      }),
-    );
-  } else if (chunk.type === 'code') {
+    // 缓冲 text delta，rAF 批量刷新（最多 16ms 延迟 = 60fps）
+    const existing = textBuffer.get(msgId) ?? '';
+    textBuffer.set(msgId, existing + chunk.delta);
+    if (!flushScheduled) {
+      flushScheduled = true;
+      requestAnimationFrame(() => {
+        flushScheduled = false;
+        // 刷新所有缓冲的消息
+        for (const [mid] of textBuffer) {
+          flushTextBuffer(set, convId, mid);
+        }
+      });
+    }
+  } else {
+    // 非 text chunk 到达前先 flush 文字缓冲
+    flushTextBuffer(set, convId, msgId);
+    if (chunk.type === 'code') {
     // 把 code 作为单独一条新消息追加
     set(s =>
       addMsg(s, convId, {
@@ -891,8 +927,16 @@ function handleChunkInto(
         createdAt: Date.now(),
       }),
     );
+    // 自动打开右侧面板 + 定位到这个 artifact，
+    // 否则用户要手动找"产物 (N)" 按钮才能看到代码/Diff/预览（T4/T5/T6）
+    set(s => ({
+      ...s,
+      activeArtifactId: artifact.id,
+      artifactPanelOpen: true,
+    }));
     if (task) {
       task.producedArtifactId = artifact.id;
     }
+  }
   }
 }

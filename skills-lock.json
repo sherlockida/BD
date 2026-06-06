@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "skills": {
+    "agent-browser": {
+      "source": "pedronauck/skills",
+      "sourceType": "github",
+      "skillPath": "skills/curated/agent-browser/SKILL.md",
+      "computedHash": "ec6af8731a13045ec5cf86d7b4cb45efc3013eb0ac8a57e8b5cb13c31f469e91"
+    },
+    "alibabacloud-tech-solution-animation-creation-auto-deploy": {
+      "source": "aliyun/alibabacloud-aiops-skills",
+      "sourceType": "github",
+      "skillPath": "skills/solutions/alibabacloud-tech-solution-animation-creation-auto-deploy/SKILL.md",
+      "computedHash": "e40367f389388c85df27160984c30d773e661b58619f1487d812960408ffb478"
+    },
+    "brainstorming": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "skillPath": "skills/brainstorming/SKILL.md",
+      "computedHash": "f483c304fcde060211ffae00f49bb728536e7e7613c99db45b5b924d9fc17243"
+    },
+    "claude-hud-statusline": {
+      "source": "aradotso/trending-skills",
+      "sourceType": "github",
+      "skillPath": "skills/claude-hud-statusline/SKILL.md",
+      "computedHash": "cd7da022b36d2c5f94fba4dfe1815d3578b22dcce4f6ec3aa9cd1a74fba49b78"
+    },
+    "code-review-excellence": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/developer-essentials/skills/code-review-excellence/SKILL.md",
+      "computedHash": "89b2a6a234f6368b12f0232e1d77bd5ed894115114edf67eb1f2976e153664c0"
+    },
+    "comprehensive-review-full-review": {
+      "source": "sickn33/antigravity-awesome-skills",
+      "sourceType": "github",
+      "skillPath": "skills/comprehensive-review-full-review/SKILL.md",
+      "computedHash": "8cae91eccef15890ada4ef2facc21bfa1a938e5c11984e2eda45829cd46f2494"
+    },
+    "frontend-dev": {
+      "source": "nexu-io/open-design",
+      "sourceType": "github",
+      "skillPath": "skills/frontend-dev/SKILL.md",
+      "computedHash": "900d1af0f5dfd9ac1b67e2a1737ead0fc6e68333a4e9179a3e31aec8bd6f3260"
+    },
+    "generate-image": {
+      "source": "laurigates/claude-plugins",
+      "sourceType": "github",
+      "skillPath": "tools-plugin/skills/generate-image/SKILL.md",
+      "computedHash": "b66c96d25719a6c730b9efb6854dba2d19ed846961b6ec700f3c653e01cc1155"
+    },
+    "prompt-engineering-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/llm-application-dev/skills/prompt-engineering-patterns/SKILL.md",
+      "computedHash": "02098f8a63f10c8700df6c042346c170a121cd54905d8009f13528bad8eb8e53"
+    },
+    "ralph-loop": {
+      "source": "andrelandgraf/fullstackrecipes",
+      "sourceType": "github",
+      "skillPath": "skills/ralph-loop/SKILL.md",
+      "computedHash": "6adfafbe4540528e6e8c12e5bc590d8103cea1bc3b0049f4b612384ced6509dd"
+    },
+    "requesting-code-review": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "skillPath": "skills/requesting-code-review/SKILL.md",
+      "computedHash": "874f3786b05007a8b4a60452a4cd89b9917c645d34b6b1e40ea05037d12f0e67"
+    },
+    "ui-ux-pro-max": {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/ui-ux-pro-max/SKILL.md",
+      "computedHash": "6337038fe1fe6bbe1b9f252ab678ee575859190bab6f0f246f4061824eb40875"
+    },
+    "using-superpowers": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "skillPath": "skills/using-superpowers/SKILL.md",
+      "computedHash": "de10fd3ff46d797acc92b9df6b3ea456a5cd1d095b73c90bc921e83cce4c5bb9"
+    }
+  }
+}

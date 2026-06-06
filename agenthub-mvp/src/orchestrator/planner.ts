@@ -122,7 +122,7 @@ export function plan(intent: string, availableAgents: Agent[]): OrchestratorPlan
   }
 
   // 场景 D：写文档
-  if (/文档|文案|说明|spec|prd|介绍/.test(lower)) {
+  if (/文档|文案|说明|spec|prd|介绍|确认\s*spec/i.test(lower)) {
     const docAgent = pick(['agent_doc', 'agent_open_code'], 'doc');
     return {
       id: planId,
@@ -133,6 +133,8 @@ export function plan(intent: string, availableAgents: Agent[]): OrchestratorPlan
         title: '撰写文档',
         description: intent,
         assignedAgentId: docAgent,
+        // 防御：DocAgent 在后端历史版本里未注册时，降级到 OpenCode 完成
+        fallbackAgentId: 'agent_open_code',
         dependsOn: [],
         status: 'pending',
       }],

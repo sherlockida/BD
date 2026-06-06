@@ -7,7 +7,7 @@ import { DeployCard } from './DeployCard';
 import {
   Copy, RefreshCw, CornerUpLeft, Pin, PinOff, Sparkles, Code2,
 } from './icons';
-import { useState } from 'react';
+import { useState, memo } from 'react';
 
 interface Props {
   message: Message;
@@ -18,7 +18,7 @@ interface Props {
   onDistillSkill: (m: Message) => void;
 }
 
-export function MessageBubble({
+function MessageBubbleComponent({
   message: m,
   agentById,
   showAvatar,
@@ -216,7 +216,11 @@ function renderMarkdownLike(text: string): React.ReactNode {
         buf.push(lines[i].replace(/^>\s?/, ''));
         i++;
       }
-      out.push(<blockquote key={out.length}>{buf.map(inline)}</blockquote>);
+      out.push(
+        <blockquote key={out.length}>
+          {buf.map((b, k) => <span key={k}>{inline(b, k)}{k < buf.length - 1 ? <br /> : null}</span>)}
+        </blockquote>,
+      );
       continue;
     }
     if (/^[-*]\s+/.test(line)) {
@@ -270,3 +274,5 @@ function inline(text: string, k: number = 0): React.ReactNode {
   if (last < text.length) parts.push(text.slice(last));
   return <>{parts.length ? parts : text}</>;
 }
+
+export const MessageBubble = memo(MessageBubbleComponent);

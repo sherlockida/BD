@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import Editor, { DiffEditor } from '@monaco-editor/react';
 import { useAppStore } from '../store/appStore';
 import type { Artifact, ArtifactVersion, ID } from '../types';
 import { diffLines } from '../utils/diff';
@@ -110,14 +111,31 @@ export function ArtifactPanel() {
           {tab === 'code' && <CodeBody version={version} />}
           {tab === 'diff' && (
             prevVersion ? (
-              <DiffBody
-                diff={{
-                  artifactId: artifact.id,
-                  fromVersionId: prevVersion.id,
-                  toVersionId: version.id,
-                  hunks: diffLines(prevVersion.content, version.content),
-                }}
-              />
+              <div className="h-full flex flex-col">
+                <div className="px-4 py-2 bg-[#252530] text-zinc-400 text-xs flex items-center gap-2 border-b border-zinc-700 shrink-0">
+                  <GitBranch size={12} />
+                  <span>v{prevVersion.version} → v{version.version}</span>
+                </div>
+                <div className="flex-1">
+                  <DiffEditor
+                    height="100%"
+                    language="javascript"
+                    original={prevVersion.content}
+                    modified={version.content}
+                    theme="vs-dark"
+                    options={{
+                      readOnly: true,
+                      minimap: { enabled: false },
+                      fontSize: 13,
+                      lineNumbers: 'on',
+                      scrollBeyondLastLine: false,
+                      wordWrap: 'on',
+                      automaticLayout: true,
+                      renderSideBySide: true,
+                    }}
+                  />
+                </div>
+              </div>
             ) : (
               <div className="text-center text-sm text-feishu-subtext py-10">没有更早的版本可对比</div>
             )
@@ -165,12 +183,13 @@ function ArtTypeIcon({ t }: { t: Artifact['type'] }) {
 
 function PreviewBody({ artifact, version }: { artifact: Artifact; version: ArtifactVersion }) {
   if (artifact.type === 'webpage') {
+    // CSP-protected sandbox: allow scripts (for interactive previews) but block network, popups, top-navigation
     return (
       <iframe
         title="preview"
         className="w-full h-full bg-white border-0"
-        sandbox="allow-same-origin allow-scripts allow-forms"
-        srcDoc={version.content}
+        sandbox="allow-scripts"
+        srcDoc={injectCsp(version.content)}
       />
     );
   }
@@ -188,18 +207,47 @@ function PreviewBody({ artifact, version }: { artifact: Artifact; version: Artif
 }
 
 function CodeBody({ version }: { version: ArtifactVersion }) {
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(version.content);
+  }, [version.content]);
+
+  // Determine language from artifact metadata
+  const language = useMemo(() => {
+    const ext = version.content.match(/<\/?(\w+)/)?.[1]?.toLowerCase();
+    if (ext === 'html' || version.content.includes('<!DOCTYPE')) return 'html';
+    if (ext === 'css' || version.content.includes('@import') || version.content.includes('{')) return 'css';
+    return 'javascript';
+  }, [version.content]);
+
   return (
-    <div className="bg-[#1e1e2e] text-zinc-100 font-mono text-xs h-full overflow-auto p-4">
-      <div className="mb-2 text-zinc-400 flex items-center gap-2">
+    <div className="h-full flex flex-col">
+      <div className="px-4 py-2 bg-[#252530] text-zinc-400 text-xs flex items-center gap-2 border-b border-zinc-700 shrink-0">
         <Code2 size={12} />
         <span>v{version.version} · {version.commitMessage}</span>
         <div className="flex-1" />
         <button
-          onClick={() => navigator.clipboard.writeText(version.content)}
-          className="hover:text-white text-zinc-400" title="复制"
+          onClick={handleCopy}
+          className="hover:text-white transition" title="复制全部代码"
         ><Copy size={12} /></button>
       </div>
-      <pre className="whitespace-pre">{version.content}</pre>
+      <div className="flex-1">
+        <Editor
+          height="100%"
+          language={language}
+          value={version.content}
+          theme="vs-dark"
+          options={{
+            readOnly: true,
+            minimap: { enabled: false },
+            fontSize: 13,
+            lineNumbers: 'on',
+            scrollBeyondLastLine: false,
+            wordWrap: 'on',
+            automaticLayout: true,
+            padding: { top: 12, bottom: 12 },
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -236,6 +284,18 @@ function HistoryBody({
       ))}
     </div>
   );
+}
+
+/** Inject CSP meta tag into HTML content for iframe sandbox safety */
+function injectCsp(html: string): string {
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'none'; frame-src 'none';">`;
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head[^>]*>/i, `$&${csp}`);
+  }
+  if (/<html[^>]*>/i.test(html)) {
+    return html.replace(/<html[^>]*>/i, `$&<head>${csp}</head>`);
+  }
+  return `<!DOCTYPE html><html><head>${csp}</head><body>${html}</body></html>`;
 }
 
 function formatTs(ts: number) {

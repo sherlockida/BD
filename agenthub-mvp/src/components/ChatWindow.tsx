@@ -35,10 +35,19 @@ export function ChatWindow() {
   const [showMembers, setShowMembers] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const isNearBottomRef = useRef(true);  // 用户是否在底部附近
 
-  // 自动滚动
+  // 检测用户是否手动滚离底部
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const threshold = 200; // 离底部 200px 以内视为"在底部"
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+  };
+
+  // 仅在用户处于底部时自动滚到底部
   useEffect(() => {
-    if (scrollRef.current) {
+    if (isNearBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
@@ -182,7 +191,7 @@ export function ChatWindow() {
       )}
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto py-2">
+      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto py-2">
         {messages.map((m, idx) => {
           const prev = messages[idx - 1];
           const showAvatar =
