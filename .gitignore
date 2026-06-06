@@ -6,3 +6,5 @@ dist/
 Thumbs.db
 .env
 server/drizzle/
+.agents/skills/
+.claude/skills/
