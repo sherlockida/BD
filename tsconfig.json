@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["./AgentHub-V2—SharedTypes/src/*"],
+      "@canvas/*": ["./AgentHub-V2—CanvasEngine/src/*"],
+      "@genui/*": ["./AgentHub-V2—GenUI/src/*"],
+      "@panels/*": ["./AgentHub-V2—Panels/src/*"],
+      "@demofx/*": ["./AgentHub-V2—DemoFX/src/*"],
+      "@shell/*": ["./AgentHub-V2—AppShell/src/*"],
+      "@backend/*": ["./AgentHub-V2—BackendServices/src/*"],
+      "@legacy/*": ["../agenthub-mvp/src/*"]
+    }
+  },
+  "include": [
+    "AgentHub-V2—SharedTypes/src",
+    "AgentHub-V2—CanvasEngine/src",
+    "AgentHub-V2—GenUI/src",
+    "AgentHub-V2—Panels/src",
+    "AgentHub-V2—DemoFX/src",
+    "AgentHub-V2—AppShell/src",
+    "AgentHub-V2—BackendServices/src",
+    "AgentHub-V2—Integration/src"
+  ]
+}
