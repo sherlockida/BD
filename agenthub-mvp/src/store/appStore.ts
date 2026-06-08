@@ -7,6 +7,8 @@ import {
   addArtifactVersion as apiAddArtifactVersion,
   rollbackArtifact as apiRollbackArtifact,
   createSkill as apiCreateSkill,
+  triggerDeploy as apiTriggerDeploy,
+  getDeployStatus as apiGetDeployStatus,
   listConversations as apiListConversations,
   listMessages as apiListMessages,
   listArtifacts as apiListArtifacts,
@@ -93,6 +95,11 @@ interface AppState {
 
   // ── Actions: hydration ──
   hydrateFromBackend(): Promise<void>;
+
+  // ── Actions: WebSocket event handlers ──
+  handleWSMessage(convId: ID, raw: any): void;
+  handleWSArtifact(artifactId: ID, version: any): void;
+  handleWSDeployProgress(deployId: string, step: string, progress: number, url?: string): void;
 }
 
 // ── 内部：addMessage 工具 ──
@@ -543,20 +550,22 @@ export const useAppStore = create<AppState>((set, get) => {
     async deployArtifact(artifactId, convId) {
       const art = get().artifacts.find(a => a.id === artifactId);
       if (!art) return;
-      const deployId = uid('deploy');
+
+      // Create initial deploy message card
+      const msgId = genUuid();
       const msg: Message = {
-        id: genUuid(),
+        id: msgId,
         conversationId: convId,
         senderType: 'agent',
         senderId: 'agent_open_code',
         content: {
           kind: 'deploy',
           deploy: {
-            id: deployId,
+            id: '', // will be filled by backend response
             artifactId,
             step: 'building',
             progress: 5,
-            message: '构建中...',
+            message: '正在连接部署服务...',
             startedAt: Date.now(),
           },
         },
@@ -564,17 +573,13 @@ export const useAppStore = create<AppState>((set, get) => {
       };
       set(s => addMsg(s, convId, msg));
 
-      const steps: { step: DeployStatus['step']; progress: number; msg: string; delay: number }[] = [
-        { step: 'building', progress: 30, msg: '正在打包静态资源...', delay: 600 },
-        { step: 'building', progress: 60, msg: '正在压缩...', delay: 500 },
-        { step: 'uploading', progress: 80, msg: '正在上传到 Vercel...', delay: 700 },
-        { step: 'uploading', progress: 95, msg: '正在分配 CDN...', delay: 500 },
-        { step: 'live', progress: 100, msg: '部署成功', delay: 400 },
-      ];
-      for (const s of steps) {
-        await sleep(s.delay);
-        set(state =>
-          patchMsg(state, convId, msg.id, m => {
+      try {
+        // Trigger real deployment via backend API
+        const deployResult = await apiTriggerDeploy(artifactId);
+
+        // Update deploy card with real deploy ID — WS handler will take over from here
+        set(s =>
+          patchMsg(s, convId, msgId, m => {
             if (m.content.kind !== 'deploy') return m;
             return {
               ...m,
@@ -582,39 +587,41 @@ export const useAppStore = create<AppState>((set, get) => {
                 ...m.content,
                 deploy: {
                   ...m.content.deploy,
-                  step: s.step,
-                  progress: s.progress,
-                  message: s.msg,
-                  ...(s.step === 'live'
-                    ? {
-                        url: `https://${art.name.replace(/[^a-z0-9]/gi, '-').toLowerCase()}-${deployId.slice(-4)}.vercel.app`,
-                        finishedAt: Date.now(),
-                      }
-                    : {}),
+                  id: deployResult.id,
+                  step: deployResult.step as DeployStatus['step'],
+                  progress: deployResult.progress,
+                  message: deployResult.message ?? '部署已启动',
+                  ...(deployResult.url ? { url: deployResult.url } : {}),
+                },
+              },
+            };
+          }),
+        );
+
+        // Poll for final status as fallback (in case WS is not connected)
+        // The WS handler will update in real-time; this is a safety net
+        pollDeployStatus(deployResult.id, convId, msgId, set, get);
+
+      } catch (err: any) {
+        set(s =>
+          patchMsg(s, convId, msgId, m => {
+            if (m.content.kind !== 'deploy') return m;
+            return {
+              ...m,
+              content: {
+                ...m.content,
+                deploy: {
+                  ...m.content.deploy,
+                  step: 'failed',
+                  progress: 0,
+                  message: `部署失败: ${err.message}`,
+                  finishedAt: Date.now(),
                 },
               },
             };
           }),
         );
       }
-
-      // 沉淀 candidate skill
-      set(s =>
-        addMsg(s, convId, {
-          id: genUuid(),
-          conversationId: convId,
-          senderType: 'agent',
-          senderId: 'agent_orchestrator',
-          content: {
-            kind: 'text',
-            text:
-              '✅ 部署完成。本次协作中我观察到 1 条可沉淀的经验：\n\n' +
-              '> **"页面骨架先行，样式后调"** — 让 Claude Code 先出 HTML 结构，Codex 再做样式，能避免双方互相覆盖。\n\n' +
-              '是否沉淀为 Skill？打开右上角 Skills 抽屉一键入库。',
-          },
-          createdAt: Date.now(),
-        }),
-      );
     },
 
     distillSkill(opts) {
@@ -747,8 +754,163 @@ export const useAppStore = create<AppState>((set, get) => {
         console.warn('[hydrate] failed:', err.message);
       }
     },
+
+    // ─────────────────────────────────────────────────────
+    // WebSocket event handlers — zero-intrusion real-time sync
+    // ─────────────────────────────────────────────────────
+
+    handleWSMessage(convId, raw) {
+      const state = get();
+      // Only process if this conversation is loaded (not stale)
+      if (!state.messagesByConv[convId]) return;
+
+      // Case 1: streaming delta (message.streaming event)
+      if (raw.streaming && raw.delta) {
+        set(s =>
+          patchMsg(s, convId, raw.id, m => {
+            if (m.content.kind !== 'text') return m;
+            return {
+              ...m,
+              streaming: true,
+              content: { kind: 'text', text: m.content.text + raw.delta },
+            };
+          }),
+        );
+        return;
+      }
+
+      // Case 2: full message (message.new event)
+      if (raw.id && raw.senderType) {
+        const msg: Message = {
+          id: raw.id,
+          conversationId: convId,
+          senderType: raw.senderType,
+          senderId: raw.senderId,
+          content: raw.content as any,
+          mentions: raw.mentions ?? [],
+          replyToMessageId: raw.replyToMessageId ?? undefined,
+          streaming: false,
+          pinned: !!raw.pinned,
+          createdAt: raw.createdAt ? new Date(raw.createdAt).getTime() : Date.now(),
+        };
+
+        // Dedup — skip if already present
+        const existing = state.messagesByConv[convId] ?? [];
+        if (existing.some(m => m.id === msg.id)) return;
+
+        set(s => addMsg(s, convId, msg));
+        return;
+      }
+    },
+
+    handleWSArtifact(artifactId, version) {
+      // Refresh artifacts list from backend when a new version comes in
+      // This is lazy: just re-fetch the full artifact to get the latest version chain
+      apiGetArtifact(artifactId).then(full => {
+        if (!full) return;
+        const art: Artifact = {
+          id: full.id,
+          conversationId: full.conversationId ?? '',
+          type: full.type as ArtifactType,
+          name: full.name,
+          language: full.language ?? undefined,
+          latestVersionId: full.latestVersionId ?? '',
+          versions: (full.versions ?? []).map(v => ({
+            id: v.id,
+            artifactId: v.artifactId,
+            version: v.version,
+            content: v.content,
+            authorAgentId: v.authorAgentId,
+            commitMessage: v.commitMessage,
+            createdAt: new Date(v.createdAt).getTime(),
+          })),
+          createdBy: full.createdBy ?? 'unknown',
+          createdAt: new Date(full.createdAt).getTime(),
+        };
+        set(s => upsertArtifact(s, art));
+
+        // Auto-advance: if artifact panel is open and this artifact is the active one,
+        // keep it highlighted so user sees the update
+        const currentActive = get().activeArtifactId;
+        if (currentActive === artifactId && get().artifactPanelOpen) {
+          set(s => ({ ...s, activeArtifactId: artifactId }));
+        }
+      }).catch(err => console.warn('[WS] artifact refresh failed:', err.message));
+    },
+
+    handleWSDeployProgress(deployId, step, progress, url) {
+      // Find the deploy message across all conversations and patch it
+      const allConvs = get().messagesByConv;
+      for (const [convId, msgs] of Object.entries(allConvs)) {
+        const deployMsg = msgs.find(
+          m => m.content.kind === 'deploy' && m.content.deploy.id === deployId,
+        );
+        if (!deployMsg || deployMsg.content.kind !== 'deploy') continue;
+
+        set(s =>
+          patchMsg(s, convId, deployMsg.id, m => {
+            if (m.content.kind !== 'deploy') return m;
+            return {
+              ...m,
+              content: {
+                ...m.content,
+                deploy: {
+                  ...m.content.deploy,
+                  step: step as DeployStatus['step'],
+                  progress,
+                  ...(url ? { url } : {}),
+                  ...(step === 'live' || step === 'failed' ? { finishedAt: Date.now() } : {}),
+                },
+              },
+            };
+          }),
+        );
+        break; // only patch the first match (deploy IDs are unique)
+      }
+    },
   };
 });
+
+// ── Polling fallback for deploy status (when WS is not connected) ──
+async function pollDeployStatus(
+  deployId: string,
+  convId: ID,
+  msgId: ID,
+  set: SetState,
+  get: GetState,
+): Promise<void> {
+  const maxPolls = 30; // 1 minute at 2s intervals
+  for (let i = 0; i < maxPolls; i++) {
+    await sleep(2000);
+    try {
+      const status = await apiGetDeployStatus(deployId);
+      set(s =>
+        patchMsg(s, convId, msgId, m => {
+          if (m.content.kind !== 'deploy') return m;
+          return {
+            ...m,
+            content: {
+              ...m.content,
+              deploy: {
+                ...m.content.deploy,
+                step: status.step as DeployStatus['step'],
+                progress: status.progress,
+                message: status.message ?? m.content.deploy.message,
+                ...(status.url ? { url: status.url } : {}),
+                ...(status.step === 'live' || status.step === 'failed'
+                  ? { finishedAt: status.finishedAt ? new Date(status.finishedAt).getTime() : Date.now() }
+                  : {}),
+              },
+            },
+          };
+        }),
+      );
+      if (status.step === 'live' || status.step === 'failed') break;
+    } catch {
+      // continue polling on transient errors
+    }
+  }
+}
 
 // ────────────────────────────────────────────────────────────
 // 内部：单 agent / 编排两种执行路径

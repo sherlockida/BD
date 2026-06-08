@@ -123,6 +123,18 @@ refactor: 重构
 chore: 杂项
 ```
 
+### 数据库中文编码规范 ⚠️
+
+**新建表时必须考虑 UTF-8 编码：**
+- Docker Compose: 设置 `LANG=C.UTF-8` + `POSTGRES_INITDB_ARGS="--encoding=UTF-8 --locale=C.UTF-8"`
+- 连接池: 每个新连接执行 `SET client_encoding = 'UTF8'`
+- 连接字符串: 包含 `?client_encoding=UTF8`
+
+**遇到中文乱码的处理优先级：**
+1. **先尝试恢复** — 检查 hex 值 (`encode(col::bytea, 'hex')`) 判断原始字节是否可恢复
+2. **尝试编码逆转** — `convert_from(convert_to(col, 'LATIN1'), 'UTF8')` 等 double-encoding 反转
+3. **删除是最后手段** — 仅当字节已是 U+FFFD 替换字符或截断损坏时才删除
+
 ### 单文件行数上限
 - 组件/工具函数: ≤ 300 行
 - Store 文件: ≤ 500 行

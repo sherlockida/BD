@@ -7,6 +7,7 @@ import { SkillsDrawer } from './components/SkillsDrawer';
 import { NewChatModal } from './components/NewChatModal';
 import { NewAgentModal } from './components/NewAgentModal';
 import { useAppStore } from './store/appStore';
+import { useAgentHubWS } from './hooks/useAgentHubWS';
 
 export default function App() {
   const [showNewChat, setShowNewChat] = useState(false);
@@ -16,6 +17,9 @@ export default function App() {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  // WebSocket real-time sync — multi-tab/device message & artifact updates
+  useAgentHubWS();
 
   return (
     <div className="h-screen w-screen flex bg-feishu-bg text-feishu-text overflow-hidden font-sans">

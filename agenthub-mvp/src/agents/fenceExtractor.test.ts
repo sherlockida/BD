@@ -1,172 +1,130 @@
 /**
- * Smoke test for fenceExtractor. Run with: node --experimental-strip-types fenceExtractor.test.ts
- * (or compile via tsc and run the .js)
- *
- * Goal: confirm behavior across the most adversarial split patterns we expect from LLM streams.
+ * Vitest tests for fenceExtractor — streaming markdown code-fence parser.
  */
-import { createFenceExtractor } from './fenceExtractor.ts';
+import { describe, it, expect } from 'vitest';
+import { createFenceExtractor } from './fenceExtractor';
 
 type Chunk = { type: string; [k: string]: any };
 
-function run(name: string, deltas: string[], expected: (chunks: Chunk[]) => string | null) {
+function feedAll(deltas: string[]): Chunk[] {
   const ex = createFenceExtractor();
   const out: Chunk[] = [];
   for (const d of deltas) out.push(...ex.feed(d));
   out.push(...ex.flush());
-  const err = expected(out);
-  const status = err ? '❌' : '✅';
-  const summary = out
-    .map(c => {
-      if (c.type === 'text') return `T(${JSON.stringify(c.delta)})`;
-      if (c.type === 'artifact-draft') return `A[${c.name}/${c.artifactType}/${c.language}|${JSON.stringify(c.content)}]`;
-      return c.type;
-    })
-    .join(' ');
-  console.log(`${status} ${name}\n   chunks: ${summary}`);
-  if (err) console.log(`   FAIL: ${err}`);
-  return !err;
+  return out;
 }
 
-function joinText(chunks: Chunk[]) {
+function joinText(chunks: Chunk[]): string {
   return chunks.filter(c => c.type === 'text').map(c => c.delta).join('');
 }
 function artifacts(chunks: Chunk[]) {
   return chunks.filter(c => c.type === 'artifact-draft');
 }
 
-let pass = 0, fail = 0;
-function tally(ok: boolean) { ok ? pass++ : fail++; }
+describe('fenceExtractor', () => {
+  it('plain text — no artifacts', () => {
+    const cs = feedAll(['hello world']);
+    expect(artifacts(cs)).toHaveLength(0);
+    expect(joinText(cs)).toBe('hello world');
+  });
 
-// 1. Plain text only.
-tally(run('plain text', ['hello world'], cs => {
-  if (artifacts(cs).length !== 0) return 'should have no artifacts';
-  if (joinText(cs) !== 'hello world') return `text mismatch: ${joinText(cs)}`;
-  return null;
-}));
+  it('single HTML block in one delta', () => {
+    const cs = feedAll(['here is the page:\n```html\n<div>hi</div>\n```\nthat is it.']);
+    const a = artifacts(cs);
+    expect(a).toHaveLength(1);
+    expect(a[0].name).toBe('index.html');
+    expect(a[0].artifactType).toBe('webpage');
+    expect(a[0].content).toBe('<div>hi</div>');
+  });
 
-// 2. Simple HTML block, single delta.
-tally(run('single delta, html block', [
-  'here is the page:\n```html\n<div>hi</div>\n```\nthat is it.',
-], cs => {
-  const a = artifacts(cs);
-  if (a.length !== 1) return `expected 1 artifact, got ${a.length}`;
-  if (a[0].name !== 'index.html') return `name=${a[0].name}`;
-  if (a[0].artifactType !== 'webpage') return `type=${a[0].artifactType}`;
-  if (a[0].content !== '<div>hi</div>') return `content=${JSON.stringify(a[0].content)}`;
-  return null;
-}));
+  it('fence split at triple backticks across deltas', () => {
+    const cs = feedAll(['here:\n``', '`html\n<div>x</div>\n``', '`\nbye']);
+    const a = artifacts(cs);
+    expect(a).toHaveLength(1);
+    expect(a[0].content).toBe('<div>x</div>');
+    expect(joinText(cs)).toContain('bye');
+  });
 
-// 3. Fence split across delta boundary at ``` itself.
-tally(run('split at triple backticks', [
-  'here:\n``',
-  '`html\n<div>x</div>\n``',
-  '`\nbye',
-], cs => {
-  const a = artifacts(cs);
-  if (a.length !== 1) return `expected 1 artifact, got ${a.length}`;
-  if (a[0].content !== '<div>x</div>') return `content=${JSON.stringify(a[0].content)}`;
-  if (!joinText(cs).includes('bye')) return 'missing bye text';
-  return null;
-}));
+  it('split inside language token', () => {
+    const cs = feedAll(['go:\n```ht', 'ml\n<p>q</p>\n```\n']);
+    const a = artifacts(cs);
+    expect(a).toHaveLength(1);
+    expect(a[0].language).toBe('html');
+    expect(a[0].content).toBe('<p>q</p>');
+  });
 
-// 4. Lang token split.
-tally(run('split inside lang token', [
-  'go:\n```ht',
-  'ml\n<p>q</p>\n```\n',
-], cs => {
-  const a = artifacts(cs);
-  if (a.length !== 1) return 'no artifact';
-  if (a[0].language !== 'html') return `lang=${a[0].language}`;
-  if (a[0].content !== '<p>q</p>') return `content=${JSON.stringify(a[0].content)}`;
-  return null;
-}));
+  it('closing fence split across deltas', () => {
+    const cs = feedAll(['```css\n.a{c:red}\n``', '`\ndone']);
+    const a = artifacts(cs);
+    expect(a).toHaveLength(1);
+    expect(a[0].name).toBe('style.css');
+    expect(a[0].content).toBe('.a{c:red}');
+    expect(joinText(cs)).toContain('done');
+  });
 
-// 5. Closing ``` split across deltas.
-tally(run('split at closing fence', [
-  '```css\n.a{c:red}\n``',
-  '`\ndone',
-], cs => {
-  const a = artifacts(cs);
-  if (a.length !== 1) return 'no artifact';
-  if (a[0].name !== 'style.css') return `name=${a[0].name}`;
-  if (a[0].content !== '.a{c:red}') return `content=${JSON.stringify(a[0].content)}`;
-  if (joinText(cs).indexOf('done') === -1) return 'missing done';
-  return null;
-}));
+  it('two HTML blocks → second gets index-2.html', () => {
+    const cs = feedAll(['```html\n<a/>\n```\n中间\n```html\n<b/>\n```']);
+    const a = artifacts(cs);
+    expect(a).toHaveLength(2);
+    expect(a[0].name).toBe('index.html');
+    expect(a[1].name).toBe('index-2.html');
+  });
 
-// 6. Two HTML blocks → second gets index-2.html.
-tally(run('two html blocks', [
-  '```html\n<a/>\n```\n中间\n```html\n<b/>\n```',
-], cs => {
-  const a = artifacts(cs);
-  if (a.length !== 2) return `expected 2, got ${a.length}`;
-  if (a[0].name !== 'index.html' || a[1].name !== 'index-2.html') return `names=${a.map(x => x.name).join(',')}`;
-  return null;
-}));
+  it('no lang fence (just ```)', () => {
+    const cs = feedAll(['```\nplain block\n```']);
+    const a = artifacts(cs);
+    expect(a).toHaveLength(1);
+    expect(a[0].name).toBe('snippet.txt');
+    expect(a[0].content).toBe('plain block');
+  });
 
-// 7. No lang fence (just ```).
-tally(run('no lang fence', [
-  '```\nplain block\n```',
-], cs => {
-  const a = artifacts(cs);
-  if (a.length !== 1) return 'no artifact';
-  if (a[0].name !== 'snippet.txt') return `name=${a[0].name}`;
-  if (a[0].content !== 'plain block') return `content=${JSON.stringify(a[0].content)}`;
-  return null;
-}));
+  it('unterminated fence on flush emits incomplete artifact', () => {
+    const cs = feedAll(['start ```html\n<p>partial</p>\n']);
+    const a = artifacts(cs);
+    expect(a).toHaveLength(1);
+    expect(a[0].content).toBe('<p>partial</p>');
+  });
 
-// 8. Stream ends inside a fence → flush emits incomplete artifact.
-tally(run('unterminated fence on flush', [
-  'start ```html\n<p>partial</p>\n',
-], cs => {
-  const a = artifacts(cs);
-  if (a.length !== 1) return `expected 1 artifact from flush, got ${a.length}`;
-  if (a[0].content !== '<p>partial</p>') return `content=${JSON.stringify(a[0].content)}`;
-  return null;
-}));
+  it('char-by-char streaming', () => {
+    const input = '前缀\n```js\nconsole.log(1)\n```\n后缀';
+    const cs = feedAll(input.split(''));
+    const a = artifacts(cs);
+    expect(a).toHaveLength(1);
+    expect(a[0].content).toBe('console.log(1)');
+    expect(joinText(cs)).toContain('前缀');
+    expect(joinText(cs)).toContain('后缀');
+  });
 
-// 9. One-char-at-a-time streaming.
-const charByChar = '前缀\n```js\nconsole.log(1)\n```\n后缀';
-tally(run('char-by-char', charByChar.split(''), cs => {
-  const a = artifacts(cs);
-  if (a.length !== 1) return `expected 1, got ${a.length}`;
-  if (a[0].content !== 'console.log(1)') return `content=${JSON.stringify(a[0].content)}`;
-  const txt = joinText(cs);
-  if (!txt.includes('前缀')) return 'missing prefix';
-  if (!txt.includes('后缀')) return 'missing suffix';
-  return null;
-}));
+  it('empty fence body — no crash', () => {
+    const cs = feedAll(['```html\n```']);
+    // Accept either 0 or 1 artifact (current code emits inline). Just verify no crash.
+    expect(() => artifacts(cs)).not.toThrow();
+  });
 
-// 10. Empty fence body.
-tally(run('empty fence body', [
-  '```html\n```',
-], cs => {
-  // empty content → flush returns nothing; with closing fence in same delta we hit the inline emit path
-  // content after stripping trailing \n is ''. Per current code we emit the artifact anyway (we don't drop empty when closed inline).
-  // This documents behavior. We accept either 0 or 1 artifact; just make sure no crash.
-  return null;
-}));
+  it('text ends with `` — no false fence detection', () => {
+    const cs = feedAll(['hello ``']);
+    expect(artifacts(cs)).toHaveLength(0);
+    expect(joinText(cs)).toBe('hello ``');
+  });
 
-// 11. Trailing partial backticks not a fence.
-tally(run('text ends with ``', [
-  'hello ``',
-], cs => {
-  // SAFE_TRAILING=3 keeps last 3 chars. After flush, all chars should come out as text.
-  if (artifacts(cs).length !== 0) return 'should be no artifacts';
-  if (joinText(cs) !== 'hello ``') return `text=${JSON.stringify(joinText(cs))}`;
-  return null;
-}));
+  it('back-to-back fences', () => {
+    const cs = feedAll(['```js\nA\n``````css\nB\n```']);
+    const a = artifacts(cs);
+    expect(a).toHaveLength(2);
+  });
 
-// 12. Two fences glued together (no surrounding text).
-tally(run('back-to-back fences', [
-  '```js\nA\n``````css\nB\n```',
-], cs => {
-  // Between two closing/opening fences: the parser sees `` ``` `` then immediately ` ``` ` again.
-  // Outcome we want: artifact A (js) then artifact B (css).
-  const a = artifacts(cs);
-  if (a.length !== 2) return `expected 2, got ${a.length}: names=${a.map(x => x.name).join(',')}`;
-  return null;
-}));
+  it('flush without feed returns empty array', () => {
+    const ex = createFenceExtractor();
+    const out = ex.flush();
+    expect(out).toEqual([]);
+  });
 
-console.log(`\n──── ${pass} passed, ${fail} failed ────`);
-process.exit(fail > 0 ? 1 : 0);
+  it('multiple feeds without fences pass text through', () => {
+    const ex = createFenceExtractor();
+    const out1 = ex.feed('hello ');
+    const out2 = ex.feed('world');
+    const out3 = ex.flush();
+    const all = [...out1, ...out2, ...out3];
+    expect(joinText(all)).toBe('hello world');
+  });
+});

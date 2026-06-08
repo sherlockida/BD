@@ -5,7 +5,7 @@ export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
 
   db: {
-    url: process.env.DATABASE_URL ?? 'postgresql://agenthub:agenthub@localhost:5432/agenthub',
+    url: process.env.DATABASE_URL ?? 'postgresql://agenthub:agenthub@localhost:5432/agenthub?client_encoding=UTF8',
     maxConnections: parseInt(process.env.DB_MAX_CONNECTIONS ?? '10', 10),
   },
 
@@ -22,5 +22,6 @@ export const config = {
 
   deploy: {
     vercelToken: process.env.VERCEL_TOKEN ?? '',
+    vercelTeamId: process.env.VERCEL_TEAM_ID ?? '',
   },
 } as const;

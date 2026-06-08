@@ -8,7 +8,7 @@ import { createWsServer } from './ws/wsServer.js';
 // ── Route imports ──
 import { conversationsRouter } from './routes/conversations.js';
 import { messagesRouter } from './routes/messages.js';
-import { agentsRouter } from './routes/agents.js';
+import { agentsRouter, preloadCustomAgents } from './routes/agents.js';
 import { artifactsRouter } from './routes/artifacts.js';
 import { skillsRouter } from './routes/skills.js';
 import { deployRouter } from './routes/deploy.js';
@@ -63,11 +63,14 @@ const httpServer = createServer(app);
 // WebSocket attached to the same HTTP server
 createWsServer(httpServer);
 
-httpServer.listen(config.port, () => {
-  console.log(`\n🚀 AgentHub server running on http://localhost:${config.port}`);
-  console.log(`📡 WebSocket ready on ws://localhost:${config.port}/ws`);
-  console.log(`🗄️  PostgreSQL: ${config.db.url.replace(/\/\/.*@/, '//***@')}`);
-  console.log(`📦 Redis: ${config.redis.url}\n`);
+// Preload custom agents from DB before listening
+preloadCustomAgents().then(() => {
+  httpServer.listen(config.port, () => {
+    console.log(`\n🚀 AgentHub server running on http://localhost:${config.port}`);
+    console.log(`📡 WebSocket ready on ws://localhost:${config.port}/ws`);
+    console.log(`🗄️  PostgreSQL: ${config.db.url.replace(/\/\/.*@/, '//***@')}`);
+    console.log(`📦 Redis: ${config.redis.url}\n`);
+  });
 });
 
 // ── Graceful shutdown ──

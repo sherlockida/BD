@@ -318,6 +318,34 @@ export async function* streamAgentChat(
   }
 }
 
+// ── Deploy ──
+export interface DeployDTO {
+  id: string;
+  artifactId: string;
+  step: string;
+  progress: number;
+  url: string | null;
+  message: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export async function triggerDeploy(artifactId: string): Promise<DeployDTO> {
+  const res = await fetch(`${API_BASE}/deploy`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artifactId }),
+  });
+  if (!res.ok) throw new Error(`Failed to trigger deploy: ${res.status}`);
+  return res.json();
+}
+
+export async function getDeployStatus(deployId: string): Promise<DeployDTO> {
+  const res = await fetch(`${API_BASE}/deploy/${deployId}/status`);
+  if (!res.ok) throw new Error(`Failed to get deploy status: ${res.status}`);
+  return res.json();
+}
+
 // ── Planner ──
 export async function planTasks(intent: string): Promise<unknown> {
   const res = await fetch(`${API_BASE}/agents/plan`, {

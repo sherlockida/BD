@@ -2,10 +2,11 @@ import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import { chatWithAgent, availableProviders, type LlmVendor } from '../services/llmGateway.js';
 import { planTasks } from '../services/plannerService.js';
+import { db, agents as agentsTable, loadCustomAgents } from '../db/index.js';
 
 export const agentsRouter = Router();
 
-// ── Agent meta registry (in-memory for now, mirrors MVP agentRegistry) ──
+// ── Agent meta type ──
 interface AgentMeta {
   id: string;
   name: string;
@@ -19,7 +20,8 @@ interface AgentMeta {
   online: boolean;
 }
 
-const AGENT_METAS: AgentMeta[] = [
+// ── Built-in agents (hardcoded — never stored in DB) ──
+const BUILT_IN_AGENTS: AgentMeta[] = [
   {
     id: 'agent_orchestrator',
     name: 'PMO',
@@ -64,23 +66,27 @@ const AGENT_METAS: AgentMeta[] = [
     systemPrompt: '你是一位 DevOps 工程师，擅长部署、CI/CD、自动化脚本。回复简洁实用，给出可直接运行的配置和命令。',
     online: true,
   },
-  {
-    id: 'agent_doc',
-    name: 'DocAgent',
-    avatarEmoji: '✍️',
-    avatarColor: 'bg-pink-500',
-    vendor: 'custom',
-    capabilities: ['doc'],
-    tagline: '品牌文案与文档专家（用户自建）',
-    systemPrompt: '你是一位品牌文案专家，写文字克制、有故事感、有质感。',
-    isCustom: true,
-    online: true,
-  },
 ];
 
-// GET /api/agents — list all available agents
+// ── In-memory agent registry: built-in + DB-loaded custom agents ──
+const CUSTOM_AGENTS: AgentMeta[] = [];
+
+/** Return merged agent list (built-in + custom) */
+function allAgents(): AgentMeta[] {
+  return [...BUILT_IN_AGENTS, ...CUSTOM_AGENTS];
+}
+
+/** Preload custom agents from DB into memory — call at startup */
+export async function preloadCustomAgents(): Promise<void> {
+  const loaded = await loadCustomAgents();
+  CUSTOM_AGENTS.length = 0;
+  CUSTOM_AGENTS.push(...loaded);
+  console.log(`[Agents] Preloaded ${loaded.length} custom agents from DB`);
+}
+
+// GET /api/agents — list all available agents (built-in + DB custom)
 agentsRouter.get('/', (_req, res) => {
-  res.json(AGENT_METAS);
+  res.json(allAgents());
 });
 
 // GET /api/agents/providers — must be BEFORE /:id route
@@ -90,12 +96,12 @@ agentsRouter.get('/providers', (_req, res) => {
 
 // GET /api/agents/:id — get single agent meta
 agentsRouter.get('/:id', (req, res) => {
-  const agent = AGENT_METAS.find(a => a.id === req.params.id);
+  const agent = allAgents().find(a => a.id === req.params.id);
   if (!agent) return res.status(404).json({ error: 'Agent not found' });
   res.json(agent);
 });
 
-// POST /api/agents/custom — create a custom agent
+// POST /api/agents/custom — create a custom agent (persisted to DB)
 agentsRouter.post('/custom', async (req, res) => {
   try {
     const { name, tagline, capabilities, systemPrompt, avatarEmoji, avatarColor, userId } = req.body;
@@ -103,7 +109,7 @@ agentsRouter.post('/custom', async (req, res) => {
       return res.status(400).json({ error: 'name and tagline are required' });
     }
     const id = `agent_custom_${uuid().slice(0, 8)}`;
-    const agent = {
+    const agent: AgentMeta = {
       id,
       name,
       avatarEmoji: avatarEmoji ?? '🤖',
@@ -115,8 +121,36 @@ agentsRouter.post('/custom', async (req, res) => {
       isCustom: true,
       online: true,
     };
-    // In v1.1 W2: persist to DB and bind API keys from user record
-    AGENT_METAS.push(agent);
+
+    // Persist to DB
+    try {
+      await db.insert(agentsTable).values({
+        id: agent.id,
+        name: agent.name,
+        avatarEmoji: agent.avatarEmoji,
+        avatarColor: agent.avatarColor,
+        vendor: agent.vendor,
+        capabilities: agent.capabilities,
+        tagline: agent.tagline,
+        systemPrompt: agent.systemPrompt ?? '',
+        isCustom: true,
+      }).onConflictDoUpdate({
+        target: agentsTable.id,
+        set: {
+          name: agent.name,
+          avatarEmoji: agent.avatarEmoji,
+          avatarColor: agent.avatarColor,
+          capabilities: agent.capabilities,
+          tagline: agent.tagline,
+          systemPrompt: agent.systemPrompt ?? '',
+        },
+      });
+    } catch (dbErr: any) {
+      console.warn('[Agents] DB persist failed (table may not exist yet):', dbErr.message);
+    }
+
+    // Add to in-memory registry
+    CUSTOM_AGENTS.push(agent);
     res.status(201).json(agent);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -128,7 +162,7 @@ agentsRouter.post('/chat', async (req, res) => {
   const { agentId, messages, userPrompt, systemPrompt } = req.body;
 
   // Validate agent exists
-  const agentMeta = AGENT_METAS.find(a => a.id === agentId);
+  const agentMeta = allAgents().find(a => a.id === agentId);
   if (!agentMeta) {
     res.status(404).json({ error: `Agent not found: ${agentId}` });
     return;
@@ -185,7 +219,7 @@ agentsRouter.post('/plan', async (req, res) => {
     const { intent } = req.body;
     if (!intent) return res.status(400).json({ error: 'intent is required' });
 
-    const availableAgents = AGENT_METAS
+    const availableAgents = allAgents()
       .filter(a => a.id !== 'agent_orchestrator')
       .map(a => ({
         id: a.id,

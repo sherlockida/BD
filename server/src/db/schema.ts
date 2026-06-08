@@ -116,6 +116,20 @@ export const skills = pgTable('skills', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
+// ── agents (custom agents persisted to DB; built-in agents stay in code) ──
+export const agents = pgTable('agents', {
+  id: varchar('id', { length: 100 }).primaryKey(),
+  name: varchar('name', { length: 100 }).notNull(),
+  avatarEmoji: varchar('avatar_emoji', { length: 10 }).default('🤖'),
+  avatarColor: varchar('avatar_color', { length: 50 }).default('bg-gray-500'),
+  vendor: varchar('vendor', { length: 20 }).notNull().default('custom'),
+  capabilities: text('capabilities').array().default([]),
+  tagline: varchar('tagline', { length: 200 }),
+  systemPrompt: text('system_prompt'),
+  isCustom: boolean('is_custom').default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
 // ── deploys ──
 export const deploys = pgTable('deploys', {
   id: uuid('id').defaultRandom().primaryKey(),
