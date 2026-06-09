@@ -119,6 +119,8 @@ export interface Artifact {
   versions: ArtifactVersion[];
   createdBy: ID;
   createdAt: number;
+  /** 持久化状态：saved=已落盘, saving=保存中, error=保存失败, local-only=仅本地 */
+  _persistStatus?: 'saved' | 'saving' | 'error' | 'local-only';
 }
 
 // ────── Deploy ──────

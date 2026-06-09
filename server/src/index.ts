@@ -2,7 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
 import { config } from './config.js';
-import { dbHealthCheck, closeDb } from './db/index.js';
+import { db, dbHealthCheck, closeDb } from './db/index.js';
+import { sql } from 'drizzle-orm';
 import { createWsServer } from './ws/wsServer.js';
 
 // ── Route imports ──
@@ -28,9 +29,20 @@ app.use(rateLimiter);
 // ── Health check ──
 app.get('/api/health', async (_req, res) => {
   const dbOk = await dbHealthCheck();
+  let schemaOk = false;
+  if (dbOk) {
+    try {
+      // Check if core tables exist by querying them
+      await db.execute(sql`SELECT 1 FROM artifacts LIMIT 0`);
+      schemaOk = true;
+    } catch {
+      schemaOk = false;
+    }
+  }
   res.json({
-    status: dbOk ? 'ok' : 'degraded',
+    status: dbOk && schemaOk ? 'ok' : 'degraded',
     db: dbOk,
+    schema: schemaOk,
     uptime: process.uptime(),
     version: '1.1.0',
   });

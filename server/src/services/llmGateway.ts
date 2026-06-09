@@ -5,6 +5,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { config } from '../config.js';
+import { CATALOG_SYSTEM_PROMPT } from './genuiCatalog.js';
 
 // ── AgentChunk types (mirrors frontend types.ts) ──
 export type AgentChunk =
@@ -88,6 +89,12 @@ export async function* chatWithAgent(
   vendor: LlmVendor,
   params: LlmChatParams,
 ): AsyncIterable<AgentChunk> {
+  // Inject GenUI catalog instructions into every agent's system prompt
+  params = {
+    ...params,
+    systemPrompt: (params.systemPrompt ?? '') + '\n\n' + CATALOG_SYSTEM_PROMPT,
+  };
+
   const primary = mapVendorToProvider(vendor);
 
   // Check if primary provider is available

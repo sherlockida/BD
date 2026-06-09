@@ -152,7 +152,8 @@ export function createFenceExtractor() {
  */
 function defaultNameFor(lang: string): [string, ArtifactType] {
   const L = lang.toLowerCase();
-  if (L === 'html' || L === 'htm') return ['index.html', 'webpage'];
+  if (L === 'html' || L === 'htm' || L === 'xhtml') return ['index.html', 'webpage'];
+  if (L === 'xml' || L === 'svg') return ['graphic.svg', 'webpage'];
   if (L === 'css' || L === 'scss' || L === 'sass' || L === 'less') return ['style.css', 'code'];
   if (L === 'js' || L === 'javascript' || L === 'mjs') return ['script.js', 'code'];
   if (L === 'jsx') return ['component.jsx', 'code'];

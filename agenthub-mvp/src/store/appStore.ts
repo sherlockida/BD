@@ -6,6 +6,8 @@ import {
   createArtifact as apiCreateArtifact,
   addArtifactVersion as apiAddArtifactVersion,
   rollbackArtifact as apiRollbackArtifact,
+  deleteArtifact as apiDeleteArtifact,
+  deleteArtifactVersion as apiDeleteArtifactVersion,
   createSkill as apiCreateSkill,
   triggerDeploy as apiTriggerDeploy,
   getDeployStatus as apiGetDeployStatus,
@@ -87,6 +89,8 @@ interface AppState {
   // ── Actions: artifact ──
   rollbackArtifact(artifactId: ID, versionId: ID): void;
   applyDiff(artifactId: ID, fromVersionId: ID, toVersionId: ID): void;
+  deleteArtifact(artifactId: ID): Promise<void>;
+  deleteArtifactVersion(artifactId: ID, versionId: ID): Promise<void>;
   deployArtifact(artifactId: ID, convId: ID): Promise<void>;
 
   // ── Actions: skill ──
@@ -547,6 +551,55 @@ export const useAppStore = create<AppState>((set, get) => {
       // MVP：diff 已经由 ChunkProcessor 落版本了，这里仅作为占位
     },
 
+    async deleteArtifact(artifactId) {
+      const art = get().artifacts.find(a => a.id === artifactId);
+      if (!art) return;
+
+      // Optimistic delete
+      set(s => ({
+        ...s,
+        artifacts: s.artifacts.filter(a => a.id !== artifactId),
+        activeArtifactId: s.activeArtifactId === artifactId ? null : s.activeArtifactId,
+      }));
+
+      try {
+        await apiDeleteArtifact(artifactId);
+      } catch (err: any) {
+        // Rollback: restore artifact to state
+        console.error('[persist] deleteArtifact failed:', err.message);
+        set(s => upsertArtifact(s, { ...art, _persistStatus: 'error' }));
+        set(s => addMsg(s, art.conversationId, {
+          id: genUuid(),
+          conversationId: art.conversationId,
+          senderType: 'system',
+          senderId: 'system',
+          content: { kind: 'system', text: `⚠️ 删除产物 "${art.name}" 失败：${err.message}` },
+          createdAt: Date.now(),
+        }));
+      }
+    },
+
+    async deleteArtifactVersion(artifactId, versionId) {
+      const art = get().artifacts.find(a => a.id === artifactId);
+      if (!art) return;
+      const oldVersions = [...art.versions];
+
+      // Optimistic delete
+      const newVersions = art.versions.filter(v => v.id !== versionId);
+      const newLatestId = newVersions.length > 0
+        ? newVersions.reduce((a, b) => a.version > b.version ? a : b).id
+        : '';
+      set(s => upsertArtifact(s, { ...art, versions: newVersions, latestVersionId: newLatestId }));
+
+      try {
+        await apiDeleteArtifactVersion(artifactId, versionId);
+      } catch (err: any) {
+        // Rollback
+        console.error('[persist] deleteArtifactVersion failed:', err.message);
+        set(s => upsertArtifact(s, { ...art, versions: oldVersions }));
+      }
+    },
+
     async deployArtifact(artifactId, convId) {
       const art = get().artifacts.find(a => a.id === artifactId);
       if (!art) return;
@@ -666,7 +719,48 @@ export const useAppStore = create<AppState>((set, get) => {
         ]);
 
         if (!serverConvs || serverConvs.length === 0) {
-          console.log('[hydrate] no conversations on backend, keeping local demo state');
+          console.log('[hydrate] no conversations on backend, persisting local demo state to DB');
+
+          // Persist local demo conversations to DB so artifact FK constraints pass
+          const localConvs = get().conversations;
+          if (localConvs.length > 0) {
+            const persistResults = await Promise.allSettled(
+              localConvs.map(c =>
+                apiCreateConversation({
+                  id: c.id,
+                  type: c.type,
+                  title: c.title,
+                  memberAgentIds: c.memberAgentIds,
+                } as any)
+              ),
+            );
+            const succeeded = persistResults.filter(r => r.status === 'fulfilled').length;
+            console.log(`[hydrate] persisted ${succeeded}/${localConvs.length} conversations to DB`);
+          }
+
+          // Mark existing local artifacts for persistence retry
+          const localArts = get().artifacts;
+          if (localArts.length > 0) {
+            for (const art of localArts) {
+              const latestVer = art.versions.reduce((a, b) => a.version > b.version ? a : b);
+              apiCreateArtifact({
+                id: art.id,
+                versionId: latestVer.id,
+                conversationId: art.conversationId,
+                type: art.type,
+                name: art.name,
+                language: art.language,
+                content: latestVer.content,
+                authorAgentId: latestVer.authorAgentId,
+                commitMessage: latestVer.commitMessage,
+              } as any)
+                .then(() => {
+                  set(s => upsertArtifact(s, { ...get().artifacts.find(a => a.id === art.id)!, _persistStatus: 'saved' } as Artifact));
+                })
+                .catch(err => console.warn('[hydrate] artifact persist failed:', err.message));
+            }
+          }
+
           return;
         }
 
@@ -1183,17 +1277,26 @@ function handleChunkInto(
         commitMessage: chunk.commitMessage,
         createdAt: Date.now(),
       };
-      const updated: Artifact = { ...existing, versions: [...existing.versions, newVer], latestVersionId: newVer.id };
+      const updated: Artifact = { ...existing, versions: [...existing.versions, newVer], latestVersionId: newVer.id, _persistStatus: 'saving' };
       set(s => upsertArtifact(s, updated));
       artifact = updated;
 
-      // Persist new artifact version to DB
+      // Persist new artifact version to DB with status tracking
       apiAddArtifactVersion(existing.id, {
         id: newVer.id,
         content: newVer.content,
         authorAgentId: newVer.authorAgentId,
         commitMessage: newVer.commitMessage,
-      } as any).catch(err => console.warn('[persist] artifact version failed:', err.message));
+      } as any)
+        .then(() => {
+          const latest = get().artifacts.find(a => a.id === existing.id);
+          if (latest) set(s => upsertArtifact(s, { ...latest, _persistStatus: 'saved' }));
+        })
+        .catch(err => {
+          console.warn('[persist] artifact version failed:', err.message);
+          const latest = get().artifacts.find(a => a.id === existing.id);
+          if (latest) set(s => upsertArtifact(s, { ...latest, _persistStatus: 'error' }));
+        });
       // 同步发 diff card
       const prev = existing.versions[existing.versions.length - 1];
       set(s =>
@@ -1237,10 +1340,11 @@ function handleChunkInto(
         ],
         createdBy: agentId,
         createdAt: Date.now(),
+        _persistStatus: 'saving' as const,
       };
       set(s => upsertArtifact(s, artifact));
 
-      // Persist new artifact + initial version to DB
+      // Persist new artifact + initial version to DB with status tracking
       apiCreateArtifact({
         id: artId,
         versionId: verId,
@@ -1251,7 +1355,26 @@ function handleChunkInto(
         content: chunk.content,
         authorAgentId: agentId,
         commitMessage: chunk.commitMessage,
-      } as any).catch(err => console.warn('[persist] artifact create failed:', err.message));
+      } as any)
+        .then(() => {
+          const art = get().artifacts.find(a => a.id === artId);
+          if (art) set(s => upsertArtifact(s, { ...art, _persistStatus: 'saved' }));
+        })
+        .catch(err => {
+          console.warn('[persist] artifact create failed:', err.message);
+          const art = get().artifacts.find(a => a.id === artId);
+          if (art) {
+            set(s => upsertArtifact(s, { ...art, _persistStatus: 'error' }));
+            set(s => addMsg(s, convId, {
+              id: genUuid(),
+              conversationId: convId,
+              senderType: 'system',
+              senderId: 'system',
+              content: { kind: 'system', text: `⚠️ 产物 "${chunk.name}" 保存数据库失败：${err.message}。刷新页面后可能丢失。` },
+              createdAt: Date.now(),
+            }));
+          }
+        });
     }
     // artifact card
     set(s =>

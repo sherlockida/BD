@@ -8,6 +8,8 @@ type WSEvent =
   | { type: 'message.streaming'; conversationId: string; messageId: string; delta: string }
   | { type: 'task.status_change'; planId: string; taskId: string; status: string }
   | { type: 'artifact.new_version'; artifactId: string; version: unknown }
+  | { type: 'artifact.deleted'; artifactId: string }
+  | { type: 'artifact.version_deleted'; artifactId: string; versionId: string }
   | { type: 'deploy.progress'; deployId: string; progress: number; step: string }
   | { type: 'typing.indicator'; conversationId: string; agentId: string; active: boolean };
 

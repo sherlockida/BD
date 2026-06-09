@@ -223,6 +223,108 @@ artifactsRouter.post('/:id/rollback', async (req, res) => {
       .where(eq(artifacts.id, artifactId));
 
     res.status(201).json(newVer);
+
+    // Broadcast rollback event
+    const [artifactForBc] = await db
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.id, artifactId))
+      .limit(1);
+    if (artifactForBc?.conversationId) {
+      broadcastToConversation(artifactForBc.conversationId, {
+        type: 'artifact.new_version',
+        artifactId,
+        version: newVer,
+      });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/artifacts/:id — delete artifact and all versions (CASCADE)
+artifactsRouter.delete('/:id', async (req, res) => {
+  try {
+    const artifactId = req.params.id;
+
+    const [artifact] = await db
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.id, artifactId))
+      .limit(1);
+
+    if (!artifact) return res.status(404).json({ error: 'Artifact not found' });
+
+    // artifactVersions + deploys have ON DELETE CASCADE, auto cleaned
+    await db.delete(artifacts).where(eq(artifacts.id, artifactId));
+
+    // Broadcast deletion to subscribers
+    if (artifact.conversationId) {
+      broadcastToConversation(artifact.conversationId, {
+        type: 'artifact.deleted',
+        artifactId,
+      });
+    }
+
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/artifacts/:id/versions/:versionId — delete a specific version
+artifactsRouter.delete('/:id/versions/:versionId', async (req, res) => {
+  try {
+    const { id: artifactId, versionId } = req.params;
+
+    // Don't allow deleting the only version
+    const allVersions = await db
+      .select()
+      .from(artifactVersions)
+      .where(eq(artifactVersions.artifactId, artifactId));
+
+    if (allVersions.length <= 1) {
+      return res.status(400).json({
+        error: 'Cannot delete the only version. Delete the artifact instead.',
+      });
+    }
+
+    const [artifact] = await db
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.id, artifactId))
+      .limit(1);
+
+    if (!artifact) return res.status(404).json({ error: 'Artifact not found' });
+
+    const isLatest = artifact.latestVersionId === versionId;
+
+    await db.delete(artifactVersions).where(eq(artifactVersions.id, versionId));
+
+    // If we deleted the latest version, fix latestVersionId
+    if (isLatest) {
+      const [newLatest] = await db
+        .select()
+        .from(artifactVersions)
+        .where(eq(artifactVersions.artifactId, artifactId))
+        .orderBy(desc(artifactVersions.version))
+        .limit(1);
+
+      await db
+        .update(artifacts)
+        .set({ latestVersionId: newLatest?.id ?? null })
+        .where(eq(artifacts.id, artifactId));
+    }
+
+    if (artifact.conversationId) {
+      broadcastToConversation(artifact.conversationId, {
+        type: 'artifact.version_deleted',
+        artifactId,
+        versionId,
+      });
+    }
+
+    res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

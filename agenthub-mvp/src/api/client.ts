@@ -43,6 +43,17 @@ export interface AgentMeta {
   online: boolean;
 }
 
+/** Extract error message from backend JSON response, fallback to HTTP status */
+async function readError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const body = await res.json();
+    const msg = body?.error ?? body?.message ?? fallback;
+    return new Error(msg);
+  } catch {
+    return new Error(fallback);
+  }
+}
+
 // ── Conversations ──
 export async function listConversations(archived = false): Promise<ConversationDTO[]> {
   const res = await fetch(`${API_BASE}/conversations?archived=${archived}`);
@@ -183,7 +194,7 @@ export async function createArtifact(body: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`Failed to create artifact: ${res.status}`);
+  if (!res.ok) throw await readError(res, `Failed to create artifact: ${res.status}`);
   return res.json();
 }
 
@@ -196,7 +207,7 @@ export async function addArtifactVersion(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`Failed to add version: ${res.status}`);
+  if (!res.ok) throw await readError(res, `Failed to add version: ${res.status}`);
   return res.json();
 }
 
@@ -206,8 +217,19 @@ export async function rollbackArtifact(artifactId: string, versionId: string): P
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ versionId }),
   });
-  if (!res.ok) throw new Error(`Failed to rollback: ${res.status}`);
+  if (!res.ok) throw await readError(res, `Failed to rollback: ${res.status}`);
   return res.json();
+}
+
+// ── Delete artifact ──
+export async function deleteArtifact(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/artifacts/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw await readError(res, `Failed to delete artifact: ${res.status}`);
+}
+
+export async function deleteArtifactVersion(artifactId: string, versionId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/versions/${versionId}`, { method: 'DELETE' });
+  if (!res.ok) throw await readError(res, `Failed to delete version: ${res.status}`);
 }
 
 // ── Skills ──

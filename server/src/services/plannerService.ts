@@ -132,6 +132,7 @@ const PLAN_SYSTEM_PROMPT = `你是 AgentHub 的 PMO (项目总管)，负责将�
 2. 每个子任务指定一个 assignedAgentId，必须从上述可用 Agent 中选择
 3. 每个子任务指定一个 fallbackAgentId（任意另一个 Agent）
 4. 最多拆 6 个子任务，DAG 深度 ≤ 3
+4.5 当任务需要收集用户偏好（如风格、颜色、数值参数）时，可在 plan 中包含 ui-component 步骤，让用户通过交互组件做选择而非反复打字
 5. 每个子任务的 capability 必须是可用 Agent 实际拥有的
 6. 输出严格符合 JSON 格式，不要包含任何额外文字
 

@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
+import { eq } from 'drizzle-orm';
 import { chatWithAgent, availableProviders, type LlmVendor } from '../services/llmGateway.js';
 import { planTasks } from '../services/plannerService.js';
-import { db, agents as agentsTable, loadCustomAgents } from '../db/index.js';
+import { db, agents as agentsTable, loadCustomAgents, messages, conversations } from '../db/index.js';
 
 export const agentsRouter = Router();
 
@@ -232,6 +233,38 @@ agentsRouter.post('/plan', async (req, res) => {
     const plan = await planTasks(intent, availableAgents, planId);
 
     res.json(plan);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/agents/ui-input — handle GenUI component user interaction
+agentsRouter.post('/ui-input', async (req, res) => {
+  try {
+    const { conversationId, componentId, value } = req.body;
+    if (!conversationId || !componentId) {
+      return res.status(400).json({ error: 'conversationId and componentId are required' });
+    }
+
+    // Generate wakeup message
+    const wakeupContent = `用户已对交互组件 ${componentId} 做出选择: ${JSON.stringify(value)}。请根据用户的选择继续完成未完成的任务。`;
+
+    // Insert system message into conversation history
+    await db.insert(messages).values({
+      id: uuid(),
+      conversationId,
+      senderType: 'system',
+      senderId: 'system',
+      content: { kind: 'system', text: wakeupContent },
+      createdAt: new Date(),
+    });
+
+    // Update conversation lastActivityAt
+    await db.update(conversations)
+      .set({ lastActivityAt: new Date() })
+      .where(eq(conversations.id, conversationId));
+
+    res.json({ success: true, message: 'UI input recorded, agent will resume' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

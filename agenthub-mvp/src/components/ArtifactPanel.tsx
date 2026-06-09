@@ -4,7 +4,7 @@ import { useAppStore } from '../store/appStore';
 import type { Artifact, ArtifactVersion, ID } from '../types';
 import {
   X, Code2, Globe, FileText, Rocket, RotateCcw, Eye, GitBranch,
-  Layers, ChevronRight, Copy,
+  Layers, ChevronRight, Copy, RefreshCw, ExternalLink, Trash2,
 } from './icons';
 
 type PanelTab = 'preview' | 'code' | 'diff' | 'history';
@@ -22,6 +22,8 @@ export function ArtifactPanel() {
   const allArtifacts = useAppStore(s => s.artifacts);
   const openArt = useAppStore(s => s.openArtifact);
   const rollback = useAppStore(s => s.rollbackArtifact);
+  const deleteArtifact = useAppStore(s => s.deleteArtifact);
+  const deleteArtifactVersion = useAppStore(s => s.deleteArtifactVersion);
   const deploy = useAppStore(s => s.deployArtifact);
   const sendUser = useAppStore(s => s.sendUserMessage);
   const conv = useAppStore(s => s.activeConversationId
@@ -179,6 +181,17 @@ export function ArtifactPanel() {
                 setTab('preview');
               }}
               onRollback={(v) => rollback(artifact.id, v.id)}
+              onDeleteVersion={(versionId) => {
+                if (confirm(`确定删除 v${artifact.versions.find(v=>v.id===versionId)?.version} 吗？此操作不可撤销。`)) {
+                  deleteArtifactVersion(artifact.id, versionId);
+                }
+              }}
+              onDeleteArtifact={() => {
+                if (confirm(`确定删除产物"${artifact.name}"及其所有版本吗？此操作不可撤销。`)) {
+                  setOpen(false);
+                  deleteArtifact(artifact.id);
+                }
+              }}
             />
           )}
         </div>
@@ -274,21 +287,93 @@ function ArtTypeIcon({ t }: { t: Artifact['type'] }) {
   return <Ic size={14} className="text-feishu-accent" />;
 }
 
+/** Detect if content looks like a full HTML page, regardless of artifact type */
+function looksLikeWebpage(content: string): boolean {
+  return /<!DOCTYPE\s+html/i.test(content) ||
+    /<html[\s>]/i.test(content) ||
+    (/<(head|body|meta|link|style|script|div|span|h[1-6]|p|a|img|table|form|input|button|select|nav|header|footer|section|article)[\s>]/i.test(content) &&
+     content.length > 200);
+}
+
 function PreviewBody({ artifact, version }: { artifact: Artifact; version: ArtifactVersion }) {
-  if (artifact.type === 'webpage') {
-    // CSP-protected sandbox: allow scripts but block network/popups/top-navigation.
-    // key={version.id} forces React to remount iframe so srcDoc surely refreshes
+  const [iframeKey, setIframeKey] = useState(0);
+  const [showCodeFallback, setShowCodeFallback] = useState(false);
+
+  // Content-based heuristic: if content looks like HTML, treat as webpage
+  const effectiveType: Artifact['type'] =
+    (artifact.type !== 'webpage' && artifact.type !== 'doc' && looksLikeWebpage(version.content))
+      ? 'webpage'
+      : artifact.type;
+
+  const handleRefresh = useCallback(() => {
+    setIframeKey(k => k + 1);
+  }, []);
+
+  const handleOpenNewTab = useCallback(() => {
+    const blob = new Blob([version.content], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+  }, [version.content]);
+
+  if (effectiveType === 'webpage') {
     return (
-      <iframe
-        key={version.id}
-        title="preview"
-        className="w-full h-full bg-white border-0"
-        sandbox="allow-scripts"
-        srcDoc={injectCsp(version.content)}
-      />
+      <div className="h-full flex flex-col">
+        {/* Preview toolbar */}
+        <div className="flex items-center gap-1 px-3 py-1.5 bg-feishu-bg border-b border-feishu-border shrink-0">
+          <Globe size={12} className="text-feishu-accent" />
+          <span className="text-xs text-feishu-subtext mr-1">预览</span>
+          {artifact.type !== 'webpage' && (
+            <span className="text-[10px] px-1 bg-amber-100 text-amber-700 rounded" title="内容自动检测为 HTML">
+              自动识别
+            </span>
+          )}
+          <div className="flex-1" />
+          <button
+            onClick={handleRefresh}
+            className="text-xs px-2 py-0.5 rounded hover:bg-feishu-accent/10 text-feishu-subtext hover:text-feishu-text transition"
+            title="刷新预览 (重新加载 iframe)"
+          >
+            <RefreshCw size={13} />
+          </button>
+          <button
+            onClick={() => setShowCodeFallback(!showCodeFallback)}
+            className={`text-xs px-2 py-0.5 rounded transition ${
+              showCodeFallback
+                ? 'text-feishu-accent bg-feishu-accent/10'
+                : 'text-feishu-subtext hover:text-feishu-text hover:bg-feishu-accent/10'
+            }`}
+            title={showCodeFallback ? '渲染预览' : '查看源码'}
+          >
+            {showCodeFallback ? <Eye size={13} /> : <Code2 size={13} />}
+          </button>
+          <button
+            onClick={handleOpenNewTab}
+            className="text-xs px-2 py-0.5 rounded hover:bg-feishu-accent/10 text-feishu-subtext hover:text-feishu-text transition"
+            title="在新标签页打开"
+          >
+            <ExternalLink size={13} />
+          </button>
+        </div>
+
+        {/* Preview content */}
+        <div className="flex-1">
+          {showCodeFallback ? (
+            <CodeBody version={version} />
+          ) : (
+            <iframe
+              key={`${version.id}-${iframeKey}`}
+              title="preview"
+              className="w-full h-full bg-white border-0"
+              sandbox="allow-scripts allow-same-origin"
+              srcDoc={injectCsp(version.content)}
+            />
+          )}
+        </div>
+      </div>
     );
   }
-  if (artifact.type === 'doc') {
+
+  if (effectiveType === 'doc') {
     return (
       <div className="p-6 max-w-2xl mx-auto bg-white min-h-full">
         <pre className="whitespace-pre-wrap text-sm leading-relaxed text-feishu-text font-sans">
@@ -297,7 +382,8 @@ function PreviewBody({ artifact, version }: { artifact: Artifact; version: Artif
       </div>
     );
   }
-  // code
+
+  // code or unknown — show editor
   return <CodeBody version={version} />;
 }
 
@@ -364,12 +450,44 @@ function CodeBody({
 }
 
 function HistoryBody({
-  artifact, onPick, onRollback,
-}: { artifact: Artifact; onPick: (v: ArtifactVersion) => void; onRollback: (v: ArtifactVersion) => void }) {
+  artifact, onPick, onRollback, onDeleteVersion, onDeleteArtifact,
+}: {
+  artifact: Artifact;
+  onPick: (v: ArtifactVersion) => void;
+  onRollback: (v: ArtifactVersion) => void;
+  onDeleteVersion: (versionId: ID) => void;
+  onDeleteArtifact: () => void;
+}) {
+  // Persist status badge
+  const statusBadge = artifact._persistStatus === 'saving'
+    ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-700 ml-1" title="正在保存到数据库...">⏳ 保存中</span>
+    : artifact._persistStatus === 'error'
+    ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-600 ml-1" title="保存失败，刷新页面后可能丢失">⚠️ 未保存</span>
+    : null;
+
   return (
     <div className="p-4 space-y-2">
-      {[...artifact.versions].reverse().map((v, i) => (
-        <div key={v.id} className="border border-feishu-border rounded-lg p-3 bg-feishu-panel">
+      {/* Header with artifact-level actions */}
+      <div className="flex items-center justify-between mb-3 pb-2 border-b border-feishu-border">
+        <div className="flex items-center gap-1">
+          <span className="text-xs font-medium text-feishu-text">版本历史</span>
+          <span className="text-xs text-feishu-subtext">({artifact.versions.length})</span>
+          {statusBadge}
+        </div>
+        <button
+          onClick={onDeleteArtifact}
+          className="text-[11px] px-2 py-0.5 rounded text-red-500 hover:bg-red-50 transition flex items-center gap-0.5"
+          title="删除整个产物"
+        >
+          <Trash2 size={11} /> 删除产物
+        </button>
+      </div>
+
+      {[...artifact.versions].reverse().map((v, i) => {
+        const isLatest = v.id === artifact.latestVersionId;
+        const isOnlyVersion = artifact.versions.length <= 1;
+        return (
+        <div key={v.id} className={`border rounded-lg p-3 ${isLatest ? 'border-feishu-accent/30 bg-feishu-accent/5' : 'border-feishu-border bg-feishu-panel'}`}>
           <div className="flex items-center justify-between mb-1">
             <div className="flex items-center gap-2">
               <span className="text-xs font-mono bg-feishu-bg px-1.5 py-0.5 rounded">v{v.version}</span>
@@ -379,34 +497,116 @@ function HistoryBody({
             <div className="flex items-center gap-1">
               <button
                 onClick={() => onPick(v)}
-                className="text-[11px] px-2 py-0.5 rounded text-feishu-accent hover:bg-feishu-accent/10"
-              ><Eye size={11} className="inline mr-1" />查看</button>
-              {i !== 0 && (
+                className="text-[11px] px-2 py-0.5 rounded text-feishu-accent hover:bg-feishu-accent/10 transition"
+              ><Eye size={11} className="inline mr-0.5" />查看</button>
+              {!isLatest && (
                 <button
                   onClick={() => onRollback(v)}
-                  className="text-[11px] px-2 py-0.5 rounded text-amber-600 hover:bg-amber-50"
-                ><RotateCcw size={11} className="inline mr-1" />回滚</button>
+                  className="text-[11px] px-2 py-0.5 rounded text-amber-600 hover:bg-amber-50 transition"
+                ><RotateCcw size={11} className="inline mr-0.5" />回滚</button>
+              )}
+              {!isOnlyVersion && (
+                <button
+                  onClick={() => onDeleteVersion(v.id)}
+                  className="text-[11px] px-2 py-0.5 rounded text-red-400 hover:text-red-600 hover:bg-red-50 transition"
+                  title={isLatest ? '删除最新版本将自动回退到次新版本' : '删除此版本'}
+                ><Trash2 size={11} className="inline mr-0.5" />删除</button>
               )}
             </div>
           </div>
           <div className="text-xs text-feishu-text">{v.commitMessage}</div>
           <div className="text-[11px] text-feishu-subtext mt-1">by {v.authorAgentId}</div>
         </div>
-      ))}
+      )})}
     </div>
   );
 }
 
-/** Inject CSP meta tag into HTML content for iframe sandbox safety */
+/** AgentHub preview runtime — injected into every iframe sandbox */
+const AGENTHUB_RUNTIME = `
+<script>
+(function() {
+  // ── AgentHub.util global API ──
+  window.AgentHub = window.AgentHub || {};
+  window.AgentHub.util = {
+    notImplemented: function() {
+      var existing = document.querySelector('.__ah_toast');
+      if (existing) { existing.remove(); }
+      var toast = document.createElement('div');
+      toast.className = '__ah_toast';
+      toast.textContent = '此功能暂时还没有实现哦~';
+      toast.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.78);color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;z-index:99999;pointer-events:none;animation:__ah_fade 2.4s ease forwards;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;';
+      document.body.appendChild(toast);
+      setTimeout(function() { toast.remove(); }, 2500);
+    },
+    showMessage: function(text) {
+      var toast = document.createElement('div');
+      toast.textContent = text;
+      toast.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.78);color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;z-index:99999;pointer-events:none;animation:__ah_fade 2.4s ease forwards;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;';
+      document.body.appendChild(toast);
+      setTimeout(function() { toast.remove(); }, 2500);
+    }
+  };
+
+  // ── Error boundary — prevent white screen ──
+  var _origOnerror = window.onerror;
+  window.onerror = function(msg, url, line, col, err) {
+    console.warn('[AgentHub Preview] Script error:', msg);
+    var banner = document.getElementById('__ah_error_banner');
+    if (!banner && document.body) {
+      banner = document.createElement('div');
+      banner.id = '__ah_error_banner';
+      banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#fff3cd;color:#856404;padding:8px 16px;font-size:12px;z-index:99998;border-top:2px solid #ffc107;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;text-align:center;';
+      banner.textContent = '\\u26a0\\ufe0f 页面脚本错误 — 可点击预览工具栏刷新按钮重新加载';
+      document.body.appendChild(banner);
+    }
+    if (typeof _origOnerror === 'function') { return _origOnerror.apply(this, arguments); }
+    return true;
+  };
+
+  // ── Intercept clicks on unhandled buttons ──
+  document.addEventListener('click', function(e) {
+    var el = e.target.closest('button, [role="button"], .btn, a[href="#"], a[href="javascript:void(0)"]');
+    if (!el) return;
+    // Skip elements that have real handlers or are inside forms
+    var tag = el.tagName.toLowerCase();
+    var hasHandler = el.onclick || el.getAttribute('onclick');
+    var isSubmit = (tag === 'button' && (el.type === 'submit' || el.type === 'reset'));
+    var inForm = el.closest('form');
+    var isRealLink = (tag === 'a' && el.getAttribute('href') && el.getAttribute('href') !== '#' && el.getAttribute('href') !== 'javascript:void(0)');
+    var hasDataPlaceholder = el.hasAttribute('data-ah-placeholder');
+
+    if (isRealLink || isSubmit) return; // let real links and form buttons work
+    if (hasHandler && !hasDataPlaceholder) return; // let elements with explicit handlers work
+
+    // Check if it's data-ah-placeholder or truly has no handler
+    if (hasDataPlaceholder || !hasHandler) {
+      e.preventDefault();
+      e.stopPropagation();
+      window.AgentHub.util.notImplemented();
+    }
+  }, true);
+
+  // ── Toast animation ──
+  var style = document.createElement('style');
+  style.textContent = '@keyframes __ah_fade{0%,80%{opacity:1}100%{opacity:0}}';
+  if (document.head) { document.head.appendChild(style); }
+})();
+</script>`;
+
+/** Inject CSP meta tag + AgentHub runtime into HTML content for iframe sandbox safety */
 function injectCsp(html: string): string {
-  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'none'; frame-src 'none';">`;
+  // Relaxed CSP: allow connect-src to support basic fetch/XHR in preview
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' data: https: http:; connect-src 'self' https: http:; frame-src 'none';">`;
+  const runtime = AGENTHUB_RUNTIME;
+
   if (/<head[^>]*>/i.test(html)) {
-    return html.replace(/<head[^>]*>/i, `$&${csp}`);
+    return html.replace(/<head[^>]*>/i, `$&${csp}\n${runtime}`);
   }
   if (/<html[^>]*>/i.test(html)) {
-    return html.replace(/<html[^>]*>/i, `$&<head>${csp}</head>`);
+    return html.replace(/<html[^>]*>/i, `$&<head>${csp}\n${runtime}</head>`);
   }
-  return `<!DOCTYPE html><html><head>${csp}</head><body>${html}</body></html>`;
+  return `<!DOCTYPE html><html><head>${csp}\n${runtime}</head><body>${html}</body></html>`;
 }
 
 function formatTs(ts: number) {
