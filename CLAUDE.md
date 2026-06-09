@@ -151,6 +151,8 @@ chore: 杂项
 | v1.1 W2.5 | ✅ 已完成 | 流式 UX 修复 + 自建 Agent |
 | v1.1 W3 | ✅ 已完成 | Monaco Editor + iframe CSP + Diff Editor |
 | v1.1 W4 | ⬜ 待启动 | Vercel 部署集成 + E2E 测试 |
+| v2.0 W1 | ✅ 已完成 | AgentHub-V2 功能解耦重构 + Workflow 并行开发 |
+| v2.0 W1.5 | ✅ 已完成 | 产物预览修复 + DB 持久化 BugFix + DELETE API |
 
 ### LLM 配置
 - 开发环境: 所有 Agent 统一走 DeepSeek
@@ -167,3 +169,7 @@ chore: 杂项
 4. **Agent 适配器模式** — IAgent 统一接口 + RemoteAgent(后端API) / Mock(回退)
 5. **SSE 流式 + WebSocket 推送** — 聊天用 SSE，实时事件用 WS
 6. **Dev 全部走 DeepSeek** — 只有 DeepSeek Key，其他厂商预留
+7. **乐观更新 + 失败回滚** — 前端先更新 Zustand 获得即时响应，API 失败时回滚状态 + 系统消息通知用户
+8. **产物类型内容嗅探** — `looksLikeWebpage()` 检测 HTML 标签/DOCTYPE，优先于 artifact.type 字段，避免 LLM 误标注导致预览失败
+9. **预览 iframe 三层安全** — CSP meta 标签（外层限制） + AgentHub.util 运行时注入（中层错误处理） + sandbox 属性（内层隔离），确保 LLM 生成的 HTML 不会白屏
+10. **Hydration 自愈** — `hydrateFromBackend()` 发现 DB 为空时自动持久化本地 demo 数据，避免 FK 约束导致 artifact 保存失败
