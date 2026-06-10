@@ -37,9 +37,17 @@ export class RemoteAgent implements IAgent {
 
     // Phase 2: inject upstream context into system prompt
     const upstreamCtx = input.upstreamContext;
-    const effectiveSystemPrompt = upstreamCtx
+    let effectiveSystemPrompt = upstreamCtx
       ? (this.meta.systemPrompt ?? '') + `\n\n## 上游任务上下文\n${upstreamCtx}`
       : this.meta.systemPrompt;
+
+    // Inject full context artifact content into the system prompt
+    if (input.contextArtifacts?.length) {
+      for (const art of input.contextArtifacts) {
+        const latest = art.versions.reduce((a, b) => a.version > b.version ? a : b);
+        effectiveSystemPrompt += `\n\n## 相关产物: ${art.name} (${art.type})\n\`\`\`${art.language ?? ''}\n${latest.content}\n\`\`\``;
+      }
+    }
     const extractor = createFenceExtractor();
 
     try {
@@ -102,6 +110,8 @@ export class RemoteAgent implements IAgent {
       for (const ch of extractor.flush()) yield ch;
       yield { type: 'done' };
     } catch (err: any) {
+      // Fix F: 先 flush 剩余缓冲再报错，避免部分产物内容丢失
+      for (const ch of extractor.flush()) yield ch;
       yield { type: 'error', error: `Connection error: ${err.message}` };
     }
   }

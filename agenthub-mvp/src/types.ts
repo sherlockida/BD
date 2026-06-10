@@ -334,6 +334,15 @@ export interface Skill {
   conversationId?: ID;
 }
 
+// ────── Selection context for artifact-aware modifications ──────
+export interface SelectionContext {
+  artifactId: ID;
+  versionId: ID;
+  selectedText: string;
+  startOffset?: number;
+  endOffset?: number;
+}
+
 // ────── Agent IO contract (streaming) ──────
 export interface AgentInput {
   conversation: Conversation;

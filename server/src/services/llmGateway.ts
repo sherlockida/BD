@@ -172,7 +172,7 @@ async function* chatWithClaude(params: LlmChatParams, vendor: LlmVendor): AsyncI
   try {
     const stream = client.messages.stream({
       model,
-      max_tokens: params.maxTokens ?? 4096,
+      max_tokens: params.maxTokens ?? 8192,
       temperature: params.temperature ?? 0.7,
       system: systemPrompt,
       messages: anthropicMessages,
@@ -230,7 +230,7 @@ async function* chatWithGPT(params: LlmChatParams, vendor: LlmVendor): AsyncIter
   try {
     const stream = await client.chat.completions.create({
       model,
-      max_tokens: params.maxTokens ?? 4096,
+      max_tokens: params.maxTokens ?? 8192,
       temperature: params.temperature ?? 0.7,
       messages: gptMessages,
       stream: true,
@@ -283,7 +283,7 @@ async function* chatWithDeepSeek(params: LlmChatParams, vendor: LlmVendor): Asyn
   try {
     const stream = await client.chat.completions.create({
       model,
-      max_tokens: params.maxTokens ?? 4096,
+      max_tokens: params.maxTokens ?? 8192,
       temperature: params.temperature ?? 0.7,
       messages,
       stream: true,
@@ -354,7 +354,7 @@ export async function chatWithAgentSync(
     try {
       const response = await client.messages.create({
         model,
-        max_tokens: params.maxTokens ?? 4096,
+        max_tokens: params.maxTokens ?? 8192,
         temperature: params.temperature ?? 0.3,
         system: params.systemPrompt,
         messages: anthropicMessages,
@@ -391,7 +391,7 @@ export async function chatWithAgentSync(
   try {
     const response = await client.chat.completions.create({
       model,
-      max_tokens: params.maxTokens ?? 4096,
+      max_tokens: params.maxTokens ?? 8192,
       temperature: params.temperature ?? 0.3,
       messages,
     });

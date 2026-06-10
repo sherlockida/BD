@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import Editor, { DiffEditor } from '@monaco-editor/react';
 import { useAppStore } from '../store/appStore';
-import type { Artifact, ArtifactVersion, ID } from '../types';
+import type { Artifact, ArtifactVersion, ID, SelectionContext } from '../types';
 import {
   X, Code2, Globe, FileText, Rocket, RotateCcw, Eye, GitBranch,
   Layers, ChevronRight, Copy, RefreshCw, ExternalLink, Trash2,
@@ -204,7 +204,7 @@ export function ArtifactPanel() {
             version={version}
             selected={selectedCode}
             onClearSelection={() => setSelectedCode('')}
-            onSend={(text) => sendUser(conv.id, text, [], undefined, [artifact.id])}
+            onSend={(opts) => sendUser(conv.id, opts.text, opts.mentions ?? [], undefined, opts.attachedArtifactIds, opts.selectionContext)}
             members={conv.memberAgentIds}
           />
         )}
@@ -621,7 +621,7 @@ function SelectionRail({
   version: ArtifactVersion;
   selected: string;
   onClearSelection: () => void;
-  onSend: (text: string) => void;
+  onSend: (opts: {text: string; mentions?: ID[]; attachedArtifactIds: ID[]; selectionContext?: SelectionContext}) => void;
   members: ID[];
 }) {
   const agents = useAppStore(s => s.agents);
@@ -683,11 +683,19 @@ function SelectionRail({
           onClick={() => {
             if (!instruction) return;
             const a = agents.find(x => x.id === target);
-            const selectionBlock = hasSelection
-              ? `\n\n选区内容（来自 v${version.version}）:\n\`\`\`\n${trimmedSelection.slice(0, 800)}\n\`\`\`\n`
-              : '\n\n（未选中具体片段，请基于整份产物理解）\n';
-            const text = `@${a?.name ?? '某 Agent'} 针对产物 \`${artifact.name}\` ${selectionBlock}\n指令：${instruction}`;
-            onSend(text);
+            const text = `@${a?.name ?? '某 Agent'} 修改产物 \`${artifact.name}\`\n指令：${instruction}`;
+            onSend({
+              text,
+              mentions: [target],
+              attachedArtifactIds: [artifact.id],
+              ...(hasSelection ? {
+                selectionContext: {
+                  artifactId: artifact.id,
+                  versionId: version.id,
+                  selectedText: trimmedSelection,
+                },
+              } : {}),
+            });
             setInstruction('');
             onClearSelection();
           }}

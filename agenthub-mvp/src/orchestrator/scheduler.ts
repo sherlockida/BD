@@ -85,7 +85,7 @@ function sleep(ms: number): Promise<void> {
 
 export async function schedule(
   plan: OrchestratorPlan,
-  context: { conversation: Conversation; history: Message[] },
+  context: { conversation: Conversation; history: Message[]; contextArtifacts?: import('../types').Artifact[] },
   events: ScheduleEvents,
   options: ScheduleOptions = {},
 ): Promise<void> {
@@ -164,6 +164,7 @@ export async function schedule(
         userPrompt: plan.intent,
         task,
         upstreamContext: upstream || undefined,
+        contextArtifacts: context.contextArtifacts,
       };
 
       const taskStartTime = Date.now();
@@ -430,7 +431,7 @@ export async function schedule(
 export async function resumePausedTask(
   task: SubTask,
   plan: OrchestratorPlan,
-  context: { conversation: Conversation; history: Message[] },
+  context: { conversation: Conversation; history: Message[]; contextArtifacts?: import('../types').Artifact[] },
   userInput: string,
   events: ScheduleEvents,
   options: ScheduleOptions = {},
@@ -463,6 +464,7 @@ export async function resumePausedTask(
     userPrompt: `${plan.intent}\n\n[用户选择]\n${userInput}`,
     task,
     upstreamContext: upstream || undefined,
+    contextArtifacts: context.contextArtifacts,
   };
 
   const taskStartTime = Date.now();

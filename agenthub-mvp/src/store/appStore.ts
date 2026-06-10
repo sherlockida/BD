@@ -26,6 +26,7 @@ import type {
   ArtifactVersion,
   Skill,
   ID,
+  SelectionContext,
   OrchestratorPlan,
   SubTask,
   AgentChunk,
@@ -86,7 +87,7 @@ interface AppState {
   removeAgentFromConversation(convId: ID, agentId: ID): void;
 
   // ── Actions: chat ──
-  sendUserMessage(convId: ID, text: string, mentions: ID[], replyToMessageId?: ID, attachedArtifactIds?: ID[]): Promise<void>;
+  sendUserMessage(convId: ID, text: string, mentions: ID[], replyToMessageId?: ID, attachedArtifactIds?: ID[], selectionContext?: SelectionContext): Promise<void>;
   regenerateLastAgentMessage(convId: ID, agentId: ID): Promise<void>;
   triggerSlash(convId: ID, command: string): Promise<void>;
 
@@ -112,6 +113,18 @@ interface AppState {
 
 // ── 内部：addMessage 工具 ──
 const addMsg = (state: AppState, convId: ID, msg: Message): AppState => {
+  // Fire-and-forget: persist to DB (skip streaming messages — they get persisted when streaming ends)
+  if (!msg.streaming) {
+    apiPostMessage(convId, {
+      id: msg.id,
+      senderType: msg.senderType,
+      senderId: msg.senderId,
+      content: msg.content,
+      mentions: msg.mentions ?? [],
+      replyToMessageId: msg.replyToMessageId,
+    } as any).catch(err => console.warn('[persist] addMsg failed:', err.message));
+  }
+
   const list = state.messagesByConv[convId] ?? [];
   return {
     ...state,
@@ -124,11 +137,33 @@ const addMsg = (state: AppState, convId: ID, msg: Message): AppState => {
 
 const patchMsg = (state: AppState, convId: ID, msgId: ID, patch: (m: Message) => Message): AppState => {
   const list = state.messagesByConv[convId] ?? [];
+
+  // Detect streaming: true → false transition (before mutation, for TS clarity)
+  const original = list.find(m => m.id === msgId);
+  const wasStreaming = !!original?.streaming;
+
+  const newList = list.map(m => (m.id === msgId ? patch(m) : m));
+
+  // Fire-and-forget: when a streaming message transitions to non-streaming, persist final content
+  if (wasStreaming) {
+    const patched = newList.find(m => m.id === msgId);
+    if (patched && !patched.streaming) {
+      apiPostMessage(convId, {
+        id: patched.id,
+        senderType: patched.senderType,
+        senderId: patched.senderId,
+        content: patched.content,
+        mentions: patched.mentions ?? [],
+        replyToMessageId: patched.replyToMessageId,
+      } as any).catch(err => console.warn('[persist] final message failed:', err.message));
+    }
+  }
+
   return {
     ...state,
     messagesByConv: {
       ...state.messagesByConv,
-      [convId]: list.map(m => (m.id === msgId ? patch(m) : m)),
+      [convId]: newList,
     },
   };
 };
@@ -382,7 +417,7 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     // ─────────────────────────────────────────────────────
-    async sendUserMessage(convId, text, mentions, replyToMessageId, attachedArtifactIds) {
+    async sendUserMessage(convId, text, mentions, replyToMessageId, attachedArtifactIds, selectionContext) {
       const userMsg: Message = {
         id: genUuid(),
         conversationId: convId,
@@ -394,16 +429,6 @@ export const useAppStore = create<AppState>((set, get) => {
         createdAt: Date.now(),
       };
       set(s => addMsg(s, convId, userMsg));
-
-      // Persist user message (fire-and-forget)
-      apiPostMessage(convId, {
-        id: userMsg.id,
-        senderType: 'user',
-        senderId: 'user',
-        content: userMsg.content,
-        mentions,
-        replyToMessageId,
-      } as any).catch(err => console.warn('[persist] user message failed:', err.message));
 
       const conv = get().conversations.find(c => c.id === convId);
       if (!conv) return;
@@ -420,9 +445,9 @@ export const useAppStore = create<AppState>((set, get) => {
 
       if (isSingleAgentCase) {
         const targetAgentId = conv.type === 'single' ? conv.memberAgentIds[0] : nonPmoMentions[0];
-        await runSingleAgent(get, set, convId, targetAgentId, text);
+        await runSingleAgent(get, set, convId, targetAgentId, text, attachedArtifactIds, selectionContext);
       } else {
-        await runOrchestrated(get, set, convId, text);
+        await runOrchestrated(get, set, convId, text, attachedArtifactIds, selectionContext);
       }
     },
 
@@ -1028,6 +1053,8 @@ async function runSingleAgent(
   convId: ID,
   agentId: ID,
   userText: string,
+  attachedArtifactIds?: ID[],
+  selectionContext?: SelectionContext,
 ): Promise<void> {
   const agent = agentRegistry.get(agentId);
   if (!agent) return;
@@ -1048,8 +1075,22 @@ async function runSingleAgent(
   const conv = get().conversations.find(c => c.id === convId)!;
   const history = get().messagesByConv[convId] ?? [];
 
+  // Build context artifacts from attached artifact IDs
+  const contextArtifacts: Artifact[] | undefined = attachedArtifactIds?.length
+    ? attachedArtifactIds.map(id => get().artifacts.find(a => a.id === id)).filter((a): a is Artifact => !!a)
+    : undefined;
+
+  // Enhance userPrompt with selection context marker
+  let userPrompt = userText;
+  if (selectionContext && contextArtifacts?.length) {
+    const art = contextArtifacts[0];
+    userPrompt += `\n\n## 用户已选择修改此产物 \`${art.name}\`\n` +
+      `用户已选中以下区域，请重点修改此处:\n\`\`\`\n${selectionContext.selectedText.slice(0, 500)}\n\`\`\`\n` +
+      `请输出完整文件，不要只输出修改的部分。`;
+  }
+
   try {
-    for await (const chunk of agent.chat({ conversation: conv, history, userPrompt: userText })) {
+    for await (const chunk of agent.chat({ conversation: conv, history, userPrompt, contextArtifacts })) {
       handleChunkInto(get, set, convId, msgId, chunk, agentId);
     }
   } catch (e: any) {
@@ -1063,20 +1104,13 @@ async function runSingleAgent(
     return;
   }
   set(s => patchMsg(s, convId, msgId, m => ({ ...m, streaming: false })));
-
-  // Persist final agent message to DB (fire-and-forget)
-  const finalMsg = get().messagesByConv[convId]?.find(m => m.id === msgId);
-  if (finalMsg && finalMsg.content.kind === 'text' && finalMsg.content.text) {
-    apiPostMessage(convId, {
-      id: finalMsg.id,
-      senderType: 'agent',
-      senderId: agentId,
-      content: finalMsg.content,
-    } as any).catch(err => console.warn('[persist] agent message failed:', err.message));
-  }
 }
 
-async function runOrchestrated(get: GetState, set: SetState, convId: ID, userText: string): Promise<void> {
+async function runOrchestrated(
+  get: GetState, set: SetState, convId: ID, userText: string,
+  attachedArtifactIds?: ID[],
+  selectionContext?: SelectionContext,
+): Promise<void> {
   const conv = get().conversations.find(c => c.id === convId)!;
   const availableAgents = conv.memberAgentIds
     .map(id => get().agents.find(a => a.id === id))
@@ -1087,10 +1121,22 @@ async function runOrchestrated(get: GetState, set: SetState, convId: ID, userTex
     return;
   }
 
+  // Fix C: 构建上下文 artifacts + 增强 intent（选区标记）
+  let contextArtifacts: Artifact[] | undefined;
+  let enhancedIntent = userText;
+  if (attachedArtifactIds?.length) {
+    contextArtifacts = attachedArtifactIds
+      .map(id => get().artifacts.find(a => a.id === id))
+      .filter((a): a is Artifact => !!a);
+  }
+  if (selectionContext) {
+    enhancedIntent += `\n\n> 用户框选了产物 "${selectionContext.artifactId}" 中的以下区域（偏移 ${selectionContext.startOffset ?? '?'}-${selectionContext.endOffset ?? '?'}）:\n> "${selectionContext.selectedText.slice(0, 300)}"\n> 请重点修改此处，输出完整文件，不要只输出修改的部分。`;
+  }
+
   // 1) Plan via backend API (keyword fast-path + LLM smart-path, single source of truth)
   let plan: OrchestratorPlan;
   try {
-    const raw = await apiPlanTasks(userText);
+    const raw = await apiPlanTasks(enhancedIntent);
     plan = raw as OrchestratorPlan;
     console.log(`[Orchestrator] Backend plan: ${plan.subTasks.length} tasks, complexity=${plan.complexity ?? 'unknown'}`);
   } catch (err) {
@@ -1176,7 +1222,12 @@ async function runOrchestrated(get: GetState, set: SetState, convId: ID, userTex
   // Track streaming char counts per task for real-time indicator
   const streamedCharCount = new Map<string, number>();
 
-  const scheduleCtx = { conversation: conv, history: get().messagesByConv[convId] ?? [] };
+  // Fix C: include contextArtifacts so each Agent sees the full file being modified
+  const scheduleCtx = {
+    conversation: conv,
+    history: get().messagesByConv[convId] ?? [],
+    contextArtifacts,
+  };
 
   // Init blackboard for this plan so snapshot is available later
   createBlackboard(plan.id, plan.subTasks.length);
@@ -1728,40 +1779,62 @@ function handleChunkInto(
     );
   } else if (chunk.type === 'artifact-draft') {
     // 创建 / 更新 artifact 并发一条 artifact card 消息
+    let dedupName: string | undefined;
     const existing = get().artifacts.find(a => a.conversationId === convId && a.name === chunk.name);
-    let artifact: Artifact;
+
+    // Fix D: 同轮去重 — 同一 orchestration round 内不同Agent产生同名artifact时用后缀区分
+    // 而不是追加版本（避免 v6→v11 版本激增）
     if (existing) {
+      const isRecentDuplicate = Date.now() - existing.createdAt < 5 * 60 * 1000;
+      const isDifferentAgent = existing.createdBy !== agentId;
+      if (isRecentDuplicate && isDifferentAgent && existing.versions.length <= 2) {
+        const dotIdx = chunk.name.lastIndexOf('.');
+        const base = dotIdx > 0 ? chunk.name.slice(0, dotIdx) : chunk.name;
+        const ext = dotIdx > 0 ? chunk.name.slice(dotIdx) : '';
+        const agentSuffix = agentId.replace('agent_', '').replace(/_/g, '-');
+        dedupName = `${base}-${agentSuffix}${ext}`;
+      }
+    }
+
+    // If dedup is active, check for existing under the dedup name too
+    const matchName = dedupName ?? chunk.name;
+    const matchedExisting = dedupName
+      ? (get().artifacts.find(a => a.conversationId === convId && a.name === dedupName) ?? existing)
+      : existing;
+
+    let artifact: Artifact;
+    if (matchedExisting && (matchedExisting.name === chunk.name || matchedExisting.name === dedupName)) {
       const newVer: ArtifactVersion = {
         id: genUuid(),
-        artifactId: existing.id,
-        version: existing.versions.length + 1,
+        artifactId: matchedExisting.id,
+        version: matchedExisting.versions.length + 1,
         content: chunk.content,
         authorAgentId: agentId,
         commitMessage: chunk.commitMessage,
         createdAt: Date.now(),
       };
-      const updated: Artifact = { ...existing, versions: [...existing.versions, newVer], latestVersionId: newVer.id, _persistStatus: 'saving' };
+      const updated: Artifact = { ...matchedExisting, versions: [...matchedExisting.versions, newVer], latestVersionId: newVer.id, _persistStatus: 'saving' };
       set(s => upsertArtifact(s, updated));
       artifact = updated;
 
       // Persist new artifact version to DB with status tracking
-      apiAddArtifactVersion(existing.id, {
+      apiAddArtifactVersion(matchedExisting.id, {
         id: newVer.id,
         content: newVer.content,
         authorAgentId: newVer.authorAgentId,
         commitMessage: newVer.commitMessage,
       } as any)
         .then(() => {
-          const latest = get().artifacts.find(a => a.id === existing.id);
+          const latest = get().artifacts.find(a => a.id === matchedExisting.id);
           if (latest) set(s => upsertArtifact(s, { ...latest, _persistStatus: 'saved' }));
         })
         .catch(err => {
           console.warn('[persist] artifact version failed:', err.message);
-          const latest = get().artifacts.find(a => a.id === existing.id);
+          const latest = get().artifacts.find(a => a.id === matchedExisting.id);
           if (latest) set(s => upsertArtifact(s, { ...latest, _persistStatus: 'error' }));
         });
       // 同步发 diff card
-      const prev = existing.versions[existing.versions.length - 1];
+      const prev = matchedExisting.versions[matchedExisting.versions.length - 1];
       set(s =>
         addMsg(s, convId, {
           id: genUuid(),
@@ -1771,7 +1844,7 @@ function handleChunkInto(
           content: {
             kind: 'diff',
             diff: {
-              artifactId: existing.id,
+              artifactId: matchedExisting.id,
               fromVersionId: prev.id,
               toVersionId: newVer.id,
               hunks: diffLines(prev.content, chunk.content).slice(0, 200),
@@ -1787,7 +1860,7 @@ function handleChunkInto(
         id: artId,
         conversationId: convId,
         type: chunk.artifactType as ArtifactType,
-        name: chunk.name,
+        name: matchName,
         language: chunk.language,
         latestVersionId: verId,
         versions: [
@@ -1833,7 +1906,7 @@ function handleChunkInto(
               conversationId: convId,
               senderType: 'system',
               senderId: 'system',
-              content: { kind: 'system', text: `⚠️ 产物 "${chunk.name}" 保存数据库失败：${err.message}。刷新页面后可能丢失。` },
+              content: { kind: 'system', text: `⚠️ 产物 "${matchName}" 保存数据库失败：${err.message}。刷新页面后可能丢失。` },
               createdAt: Date.now(),
             }));
           }

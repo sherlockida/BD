@@ -97,6 +97,15 @@ export function createFenceExtractor() {
         state.buf += state.pending.slice(0, idx);
         // 去掉代码块末尾可能多带的一个换行
         const content = state.buf.endsWith('\n') ? state.buf.slice(0, -1) : state.buf;
+
+        // Fix E: 空围栏保护 — 与 flush() 逻辑一致，跳过空代码块
+        if (content.trim().length === 0) {
+          const rest = state.pending.slice(idx + 3);
+          state = { kind: 'outside', pending: '' };
+          if (rest.length > 0) return out.concat(feed(rest));
+          break;
+        }
+
         const lang = state.lang;
 
         // Phase 3: GenUI component detection — ```ui { "component": "ChoiceCards", ... } ```
