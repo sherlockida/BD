@@ -238,6 +238,7 @@ const PLAN_SYSTEM_PROMPT = `You are AgentHub's PMO (Project Management Office). 
 3. Max 6 subtasks, dependency chain depth ≤ 3
 4. Each subtask MUST have clear acceptance criteria
 4.5 When the task requires collecting user preferences (style, colors, parameters), include a ui-component step
+4.6 For artifact-producing tasks (webpage/code), each generated artifact MUST include at least 3 interactive elements (buttons, tabs, search, toggles, accordions, form submissions, etc.) implemented as working mock interactions — no dead buttons
 5. Output MUST be valid JSON matching the schema exactly, no extra text, no markdown fences
 
 ## Output JSON Schema

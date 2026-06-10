@@ -153,11 +153,14 @@ chore: 杂项
 | v1.1 W4 | ⬜ 待启动 | Vercel 部署集成 + E2E 测试 |
 | v2.0 W1 | ✅ 已完成 | AgentHub-V2 功能解耦重构 + Workflow 并行开发 |
 | v2.0 W1.5 | ✅ 已完成 | 产物预览修复 + DB 持久化 BugFix + DELETE API |
+| v2.1 W1 | ✅ 已完成 | Orchestrator 2.0 智能多Agent编排器实现（classifier/supervisor/agentSelector/blackboard/critic/synthesizer/trace/stall/saga）+ 133 tests |
+| v2.1 W2 | ✅ 已完成 | 全链路修复：DAG死锁 + 上下文流转 + GenUI暂停/恢复 + 消息持久化 + 产物去重 + 流截断修复 + 路由修复 + 模型切换deepseek-v4-flash |
 
 ### LLM 配置
-- 开发环境: 所有 Agent 统一走 DeepSeek
+- 开发环境: 所有 Agent 统一走 DeepSeek `deepseek-v4-flash`
 - DEEPSEEK_API_KEY 在 `server/.env` 中配置
 - 生产环境按 vendor 分流: claude→Anthropic, codex→OpenAI
+- `express.json` body 限制上调至 10MB（默认100KB不足以承载完整产物上下文）
 
 ---
 
@@ -173,3 +176,9 @@ chore: 杂项
 8. **产物类型内容嗅探** — `looksLikeWebpage()` 检测 HTML 标签/DOCTYPE，优先于 artifact.type 字段，避免 LLM 误标注导致预览失败
 9. **预览 iframe 三层安全** — CSP meta 标签（外层限制） + AgentHub.util 运行时注入（中层错误处理） + sandbox 属性（内层隔离），确保 LLM 生成的 HTML 不会白屏
 10. **Hydration 自愈** — `hydrateFromBackend()` 发现 DB 为空时自动持久化本地 demo 数据，避免 FK 约束导致 artifact 保存失败
+11. **DAG 容错调度** — 上游任务失败不阻塞下游（`dependsOn` 检查 `failed` 集合），下游带 `⚠️ 上游失败` 警告继续执行；指数退避重试 + 降级 Agent 切换
+12. **GenUI 暂停/恢复** — Agent 输出 `ChoiceCards` 等交互组件时任务进入 `paused` 状态，等待用户输入后恢复执行；30 分钟无响应自动降级
+13. **统一持久化门面** — `addMsg()` 内部自动 `apiPostMessage` 到 DB，流式消息在 `streaming: false` 时延迟持久化；所有消息路径（用户/Agent/Plan Card/系统通知）统一覆盖
+14. **产物同轮去重** — 同一 orchestration round 内不同 Agent 产出同名 artifact 时用 Agent 后缀区分，避免版本 v6→v11 激增
+15. **max_tokens=8192** — DeepSeek 的 4096 token 限制导致 HTML 长输出在围栏闭合前截断，上调至 8192 后基本覆盖完整网页生成
+16. **后端全链路日志** — `server/src/utils/logger.ts` 提供彩色结构化日志：请求 → LLM 流式进度(每5s) → 完整响应内容 → 耗时/字符统计 → 错误详情

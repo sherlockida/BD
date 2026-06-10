@@ -524,30 +524,77 @@ function HistoryBody({
   );
 }
 
-/** AgentHub preview runtime — injected into every iframe sandbox */
+/** AgentHub preview runtime — injected into every iframe sandbox.
+ *  Provides mock utilities so generated pages feel interactive even without a real backend. */
 const AGENTHUB_RUNTIME = `
 <script>
 (function() {
+  // ── Shared toast helper ──
+  function _ahShowToast(text, bgColor, icon) {
+    var existing = document.querySelector('.__ah_toast');
+    if (existing) { existing.remove(); }
+    var toast = document.createElement('div');
+    toast.className = '__ah_toast';
+    toast.style.cssText = 'position:fixed;top:20px;right:20px;max-width:380px;background:' + bgColor + ';color:#fff;padding:12px 20px;border-radius:8px;font-size:14px;z-index:99999;box-shadow:0 4px 24px rgba(0,0,0,0.18);animation:__ah_slideIn 0.35s ease,__ah_fade 2.4s ease 2s forwards;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5;word-break:break-word;';
+    toast.innerHTML = '<span style="display:inline-flex;align-items:center;gap:8px"><span style="font-size:16px;flex-shrink:0">' + icon + '</span><span>' + text + '<\\/span><\\/span>';
+    document.body.appendChild(toast);
+    setTimeout(function() { if (toast.parentNode) toast.remove(); }, 4500);
+  }
+
   // ── AgentHub.util global API ──
   window.AgentHub = window.AgentHub || {};
   window.AgentHub.util = {
+    // ── Multi-type toasts ──
+    toast: {
+      success: function(text) { _ahShowToast(text || '操作成功', '#10b981', '\\u2705'); },
+      error:   function(text) { _ahShowToast(text || '操作失败', '#ef4444', '\\u274c'); },
+      warning: function(text) { _ahShowToast(text || '请注意',   '#f59e0b', '\\u26a0\\ufe0f'); },
+      info:    function(text) { _ahShowToast(text || '提示',     '#3b82f6', '\\u2139\\ufe0f'); }
+    },
+
+    // ── Legacy (backward compat) ──
     notImplemented: function() {
-      var existing = document.querySelector('.__ah_toast');
-      if (existing) { existing.remove(); }
-      var toast = document.createElement('div');
-      toast.className = '__ah_toast';
-      toast.textContent = '此功能暂时还没有实现哦~';
-      toast.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.78);color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;z-index:99999;pointer-events:none;animation:__ah_fade 2.4s ease forwards;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;';
-      document.body.appendChild(toast);
-      setTimeout(function() { toast.remove(); }, 2500);
+      this.toast.info('此功能暂时还没有实现哦~');
     },
     showMessage: function(text) {
-      var toast = document.createElement('div');
-      toast.textContent = text;
-      toast.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.78);color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;z-index:99999;pointer-events:none;animation:__ah_fade 2.4s ease forwards;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;';
-      document.body.appendChild(toast);
-      setTimeout(function() { toast.remove(); }, 2500);
+      this.toast.info(text);
+    },
+
+    // ── Mock API — returns a Promise that resolves after delayMs ──
+    mockApi: function(delayMs, mockResponse) {
+      var d = typeof delayMs === 'number' ? delayMs : 800;
+      var resp = mockResponse !== undefined ? mockResponse : { ok: true };
+      return new Promise(function(resolve) {
+        setTimeout(function() { resolve(resp); }, d);
+      });
+    },
+
+    // ── Simple iframe-safe key-value store (lost on reload) ──
+    store: {
+      _data: {},
+      get: function(key) { return this._data[key]; },
+      set: function(key, val) { this._data[key] = val; return val; },
+      remove: function(key) { delete this._data[key]; },
+      clear: function() { this._data = {}; },
+      keys: function() { return Object.keys(this._data); }
     }
+  };
+
+  // ── AgentHub.anim — preset animation helpers ──
+  window.AgentHub.anim = {
+    _animate: function(el, keyframeName, durationMs, removeAfter) {
+      if (!el) return;
+      var dur = (durationMs || 500) + 'ms';
+      el.style.animation = keyframeName + ' ' + dur + ' ease';
+      if (removeAfter) {
+        setTimeout(function() { el.style.animation = ''; }, durationMs || 500);
+      }
+    },
+    fadeIn:  function(el, dur) { this._animate(el, '__ah_fadeIn',  dur || 400, true); },
+    slideUp: function(el, dur) { this._animate(el, '__ah_slideUp', dur || 400, true); },
+    pulse:   function(el, dur) { this._animate(el, '__ah_pulse',   dur || 600, true); },
+    shake:   function(el, dur) { this._animate(el, '__ah_shake',   dur || 500, true); },
+    spin:    function(el, dur) { this._animate(el, '__ah_spin',    dur || 800, true); }
   };
 
   // ── Error boundary — prevent white screen ──
@@ -566,33 +613,48 @@ const AGENTHUB_RUNTIME = `
     return true;
   };
 
-  // ── Intercept clicks on unhandled buttons ──
+  // ── Smart click interceptor: only intercept genuinely unhandled elements ──
   document.addEventListener('click', function(e) {
     var el = e.target.closest('button, [role="button"], .btn, a[href="#"], a[href="javascript:void(0)"]');
     if (!el) return;
-    // Skip elements that have real handlers or are inside forms
+
     var tag = el.tagName.toLowerCase();
-    var hasHandler = el.onclick || el.getAttribute('onclick');
+    var hasInlineHandler = el.onclick || el.getAttribute('onclick');
+
+    // Respect elements with inline handlers — Agent's own code handles them
+    if (hasInlineHandler) return;
+
+    // Check for addEventListener-bound handlers via the element's dataset flag
+    // (Agents can set data-ah-handled="true" to explicitly skip interception)
+    if (el.dataset && el.dataset.ahHandled === 'true') return;
+
     var isSubmit = (tag === 'button' && (el.type === 'submit' || el.type === 'reset'));
-    var inForm = el.closest('form');
     var isRealLink = (tag === 'a' && el.getAttribute('href') && el.getAttribute('href') !== '#' && el.getAttribute('href') !== 'javascript:void(0)');
     var hasDataPlaceholder = el.hasAttribute('data-ah-placeholder');
 
-    if (isRealLink || isSubmit) return; // let real links and form buttons work
-    if (hasHandler && !hasDataPlaceholder) return; // let elements with explicit handlers work
+    if (isRealLink || isSubmit) return; // let real links and form submits work normally
 
-    // Check if it's data-ah-placeholder or truly has no handler
-    if (hasDataPlaceholder || !hasHandler) {
+    // Only intercept if the element has no inline handler AND is either
+    // explicitly marked as placeholder OR appears to have no bound logic
+    if (hasDataPlaceholder) {
       e.preventDefault();
       e.stopPropagation();
-      window.AgentHub.util.notImplemented();
+      window.AgentHub.util.toast.info('此功能暂时还没有实现哦~');
     }
   }, true);
 
-  // ── Toast animation ──
-  var style = document.createElement('style');
-  style.textContent = '@keyframes __ah_fade{0%,80%{opacity:1}100%{opacity:0}}';
-  if (document.head) { document.head.appendChild(style); }
+  // ── Animations & keyframes ──
+  var _ahStyle = document.createElement('style');
+  _ahStyle.textContent = [
+    '@keyframes __ah_fade{0%,80%{opacity:1}100%{opacity:0}}',
+    '@keyframes __ah_slideIn{0%{opacity:0;transform:translateY(-12px)}100%{opacity:1;transform:translateY(0)}}',
+    '@keyframes __ah_fadeIn{0%{opacity:0}100%{opacity:1}}',
+    '@keyframes __ah_slideUp{0%{opacity:0;transform:translateY(16px)}100%{opacity:1;transform:translateY(0)}}',
+    '@keyframes __ah_pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}',
+    '@keyframes __ah_shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-6px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}',
+    '@keyframes __ah_spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}'
+  ].join(' ');
+  if (document.head) { document.head.appendChild(_ahStyle); }
 })();
 </script>`;
 
