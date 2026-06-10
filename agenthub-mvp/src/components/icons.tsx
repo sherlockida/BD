@@ -42,6 +42,7 @@ export {
   Maximize2,
   Minimize2,
   Eye,
+  Download,
   Ellipsis,
   BookOpen,
   Lightbulb,

@@ -1,6 +1,7 @@
 import { useAppStore } from '../store/appStore';
 import type { Artifact, ID } from '../types';
-import { Code2, Globe, FileText, Presentation, ChevronRight } from './icons';
+import { Code2, Globe, FileText, Presentation, ChevronRight, Download } from './icons';
+import { downloadBlob } from '../utils/download';
 
 const typeIcon = {
   code: Code2,
@@ -48,8 +49,21 @@ export function ArtifactCard({ artifactId, versionId, title, preview }: {
           {preview}
         </div>
       )}
-      <div className="px-4 py-2 bg-feishu-bg/60 text-[11px] text-feishu-subtext border-t border-feishu-border">
-        点击展开预览 / 编辑 / 历史
+      <div className="px-4 py-2 bg-feishu-bg/60 text-[11px] text-feishu-subtext border-t border-feishu-border flex items-center justify-between">
+        <span>点击展开预览 / 编辑 / 历史</span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            const content = ver?.content ?? '';
+            const filename = artifact.name || 'document';
+            downloadBlob(content, filename, 'text/markdown;charset=utf-8');
+          }}
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-feishu-accent hover:bg-feishu-accent/10 transition"
+          title="下载 Markdown"
+        >
+          <Download size={12} />
+          <span>.md</span>
+        </button>
       </div>
     </div>
   );

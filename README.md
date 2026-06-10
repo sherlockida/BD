@@ -1,6 +1,6 @@
-# AgentHub — Multi-Agent Collaboration Platform
+# AgentHub — 多智能体协作平台
 
-> **IM Chat-Group Paradigm for Multi-Agent Collaboration** — Feishu-style UI, PMO intelligent orchestration, in-line artifact preview.
+> **IM 群聊范式的多 Agent 协作平台** — 飞书风格 UI，PMO 智能编排，产物内联预览。
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue)](https://www.typescriptlang.org/)
 [![React](https://img.shields.io/badge/React-18-61dafb)](https://react.dev/)
@@ -10,69 +10,69 @@
 
 ---
 
-## What is AgentHub?
+## 什么是 AgentHub？
 
-AgentHub is a multi-agent collaboration platform that treats AI agents as participants in an **IM group chat**. Instead of rigid workflow pipelines, you interact with specialized AI agents (Developer, Designer, Planner, Critic, etc.) through natural conversation — just like chatting with teammates on Feishu or Slack. A built-in **PMO Orchestrator** intelligently breaks down complex tasks, dispatches them to the right agents, and synthesizes results in real-time.
+AgentHub 是一个将 AI Agent 视为 **IM 群聊参与者** 的多智能体协作平台。你不需要编排僵化的工作流管道——只需像在飞书或 Slack 上跟队友聊天一样，与专业 Agent（开发者、设计师、规划师、评论家等）自然对话。内置 **PMO 编排器** 智能拆解复杂任务、分派给合适的 Agent、实时合成结果。
 
-### Why IM Paradigm?
+### 为什么用 IM 范式？
 
-| Traditional Multi-Agent | AgentHub (IM Paradigm) |
-|--------------------------|-------------------------|
-| Fixed DAG pipelines | Dynamic, conversational dispatch |
-| Hard to intervene mid-task | Pause, redirect, or challenge any agent |
-| Results after full completion | Streaming responses + incremental artifacts |
-| Opaque agent selection | PMO explains *who* is doing *what* and *why* |
-
----
-
-## ✨ Core Features
-
-- **🧠 Intelligent Orchestration** — PMO Orchestrator 2.0 with classifier, supervisor, agent selector, blackboard, critic, synthesizer, trace, stall detector, and saga patterns. 133 tests covering full orchestration pipeline.
-- **💬 Streaming Multi-Agent Chat** — SSE-based streaming responses with real-time WebSocket event push. See what every agent is thinking as it happens.
-- **📦 In-Line Artifact Preview** — HTML, Markdown, PDF, code, and interactive components rendered directly in the chat stream via sandboxed iframes with CSP protection.
-- **🔄 DAG Fault-Tolerant Scheduling** — Upstream task failures don't block downstream agents. Exponential backoff retries + degraded agent fallback.
-- **🎮 GenUI Interactive Components** — Agents can output `ChoiceCards` and other interactive UI, pausing execution until user input (30-min timeout with auto-degradation).
-- **🔌 Multi-Model Support** — DeepSeek (dev), Anthropic Claude + OpenAI GPT (prod). Vendor-agnostic LLM Gateway with automatic fallback.
-- **🎨 Feishu-Style UI** — Clean, modern chat interface with Monaco Editor, Diff Editor, artifact cards, and agent avatars.
-- **💾 Persistent Conversations** — All messages, artifacts, and orchestration traces persisted to PostgreSQL with optimistic UI updates + failure rollback.
+| 传统多 Agent | AgentHub（IM 范式） |
+|-------------|---------------------|
+| 固定 DAG 流水线 | 动态、对话式调度 |
+| 任务中途难以干预 | 随时暂停、引导或质疑任意 Agent |
+| 结果在全部完成后输出 | 流式响应 + 增量产物交付 |
+| Agent 选择不透明 | PMO 解释 *谁* 在做 *什么* 以及 *为什么* |
 
 ---
 
-## 🛠️ Tech Stack
+## ✨ 核心特性
 
-| Layer | Technology |
-|-------|-------------|
-| **Frontend** | React 18 + TypeScript + Vite + Zustand + TailwindCSS + Monaco Editor |
-| **Backend** | Node.js + Express + WebSocket (ws) + TypeScript |
-| **Database** | PostgreSQL 16 + Drizzle ORM |
-| **Cache** | Redis 7 |
-| **LLM** | DeepSeek (dev) / Anthropic Claude + OpenAI GPT (prod) |
-| **Infrastructure** | Docker Compose |
+- **🧠 智能编排** — PMO Orchestrator 2.0，涵盖分类器、监督者、Agent 选择器、黑板、评论家、合成器、追踪器、卡顿检测和 Saga 模式。133 个测试覆盖完整编排链路。
+- **💬 流式多 Agent 聊天** — 基于 SSE 的流式响应 + WebSocket 实时事件推送。每个 Agent 的思考过程实时可见。
+- **📦 产物内联预览** — HTML、Markdown、PDF、代码和交互组件通过沙箱 iframe + CSP 保护直接渲染在聊天流中。
+- **🔄 DAG 容错调度** — 上游任务失败不阻塞下游 Agent。指数退避重试 + 降级 Agent 切换。
+- **🎮 GenUI 交互组件** — Agent 可输出 `ChoiceCards` 等交互式 UI，暂停执行等待用户输入（30 分钟超时自动降级）。
+- **🔌 多模型支持** — DeepSeek（开发）/ Anthropic Claude + OpenAI GPT（生产）。厂商无关的 LLM Gateway 支持自动回退。
+- **🎨 飞书风格 UI** — 简洁现代的聊天界面，集成 Monaco Editor、Diff Editor、产物卡片和 Agent 头像。
+- **💾 对话持久化** — 所有消息、产物和编排追踪持久化到 PostgreSQL，前端乐观更新 + 失败回滚。
 
 ---
 
-## 🏗️ Architecture
+## 🛠️ 技术栈
+
+| 层级 | 技术 |
+|------|------|
+| **前端** | React 18 + TypeScript + Vite + Zustand + TailwindCSS + Monaco Editor |
+| **后端** | Node.js + Express + WebSocket (ws) + TypeScript |
+| **数据库** | PostgreSQL 16 + Drizzle ORM |
+| **缓存** | Redis 7 |
+| **LLM** | DeepSeek（开发）/ Anthropic Claude + OpenAI GPT（生产） |
+| **基础设施** | Docker Compose |
+
+---
+
+## 🏗️ 架构概览
 
 ```
 ┌─────────────────────┐     SSE / REST / WS      ┌──────────────────────────────┐
 │   agenthub-mvp       │ ◄──────────────────────► │   server (Express + WS)      │
 │   (React + Vite)     │                          │                              │
 │                      │                          │   ┌──────────────────────┐   │
-│  ┌────────────────┐  │                          │   │   PMO Orchestrator   │   │
+│  ┌────────────────┐  │                          │   │   PMO 编排器          │   │
 │  │  Zustand Store  │  │                          │   │   ─────────────────  │   │
-│  │  (Optimistic UI)│  │                          │   │   • Classifier       │   │
-│  └────────────────┘  │                          │   │   • Supervisor       │   │
-│                      │                          │   │   • AgentSelector    │   │
-│  ┌────────────────┐  │                          │   │   • Blackboard       │   │
-│  │  Agent Adapters │  │                          │   │   • Critic           │   │
-│  │  (Remote/Mock)  │  │                          │   │   • Synthesizer      │   │
-│  └────────────────┘  │                          │   │   • Saga             │   │
+│  │  (乐观更新)      │  │                          │   │   • 分类器            │   │
+│  └────────────────┘  │                          │   │   • 监督者            │   │
+│                      │                          │   │   • Agent 选择器      │   │
+│  ┌────────────────┐  │                          │   │   • 黑板              │   │
+│  │  Agent 适配器   │  │                          │   │   • 评论家            │   │
+│  │  (Remote/Mock)  │  │                          │   │   • 合成器            │   │
+│  └────────────────┘  │                          │   │   • Saga              │   │
 │                      │                          │   └──────┬───────────────┘   │
 │  ┌────────────────┐  │                          │          │                   │
-│  │  Artifact Panel  │  │                          │   ┌──────▼───────────────┐   │
-│  │  (iframe + CSP)  │  │                          │   │   LLM Gateway         │   │
+│  │  产物面板        │  │                          │   ┌──────▼───────────────┐   │
+│  │  (iframe + CSP) │  │                          │   │   LLM Gateway         │   │
 │  └────────────────┘  │                          │   │   (DeepSeek/Claude/   │   │
-└─────────────────────┘                          │   │    GPT + Fallback)     │   │
+└─────────────────────┘                          │   │    GPT + 回退)         │   │
                                                   │   └──────────────────────┘   │
                                                   │                              │
                                                   │   ┌──────────────────────┐   │
@@ -83,146 +83,146 @@ AgentHub is a multi-agent collaboration platform that treats AI agents as partic
 
 ---
 
-## 🚀 Quick Start
+## 🚀 快速开始
 
-### Prerequisites
+### 环境要求
 
 - **Node.js** ≥ 18
-- **Docker** (for PostgreSQL + Redis)
+- **Docker**（用于 PostgreSQL + Redis）
 
-### 1. Start Databases
+### 1. 启动数据库
 
 ```bash
 docker compose up -d
 ```
 
-### 2. Configure Environment
+### 2. 配置环境变量
 
 ```bash
 cd server
 cp .env.example .env
-# Edit .env — add your DEEPSEEK_API_KEY (required for dev)
+# 编辑 .env — 填写 DEEPSEEK_API_KEY（开发环境必须）
 npx drizzle-kit push
 ```
 
-### 3. Install Dependencies
+### 3. 安装依赖
 
 ```bash
 cd server && npm install
 cd ../agenthub-mvp && npm install
 ```
 
-### 4. Start Development Servers
+### 4. 启动开发服务
 
 ```bash
-# Terminal 1: Backend → http://localhost:3001
+# 终端 1: 后端 → http://localhost:3001
 cd server && npm run dev
 
-# Terminal 2: Frontend → http://localhost:5173
+# 终端 2: 前端 → http://localhost:5173
 cd agenthub-mvp && npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) and start collaborating with agents!
+打开 [http://localhost:5173](http://localhost:5173)，开始与 Agent 协作！
 
 ---
 
-## 📂 Project Structure
+## 📂 项目结构
 
 ```
 BD/
-├── agenthub-mvp/          # Frontend (React + Vite)
+├── agenthub-mvp/          # 前端 (React + Vite)
 │   └── src/
-│       ├── agents/        # Agent adapters (RemoteAgent + Mock fallback)
-│       ├── orchestrator/  # PMO Orchestrator (plan/schedule/aggregate)
-│       ├── store/         # Zustand state management
-│       ├── components/    # UI components (Feishu-style)
-│       ├── api/           # API client (REST + SSE + WebSocket)
-│       ├── utils/         # Utility functions
-│       └── types.ts       # Core type definitions
-├── server/                # Backend (Express + WS)
+│       ├── agents/        # Agent 适配器 (RemoteAgent + Mock 回退)
+│       ├── orchestrator/  # PMO 编排器 (规划/调度/聚合)
+│       ├── store/         # Zustand 状态管理
+│       ├── components/    # UI 组件 (飞书风格)
+│       ├── api/           # API 客户端 (REST + SSE + WebSocket)
+│       ├── utils/         # 工具函数
+│       └── types.ts       # 核心类型定义
+├── server/                # 后端 (Express + WS)
 │   └── src/
-│       ├── routes/        # REST API routes
-│       ├── services/      # LLM Gateway + Planner + PDF Generator
-│       ├── db/            # Drizzle ORM schema + connection
-│       ├── ws/            # WebSocket service
-│       └── middleware/     # Auth / rate limiting
-├── plan/                  # Design documents
-├── dev-log/               # AI-assisted development logs
+│       ├── routes/        # REST API 路由
+│       ├── services/      # LLM Gateway + Planner + PDF 生成器
+│       ├── db/            # Drizzle ORM Schema + 连接
+│       ├── ws/            # WebSocket 服务
+│       └── middleware/     # 认证 / 限流
+├── plan/                  # 设计文档
+├── dev-log/               # AI 协作开发记录
 └── docker-compose.yml     # PostgreSQL + Redis
 ```
 
 ---
 
-## 📊 Development Progress
+## 📊 开发进度
 
-| Phase | Status | Description |
-|-------|--------|-------------|
-| v1.0 MVP | ✅ Done | Pure frontend mock, IM paradigm validation |
-| v1.1 W1 | ✅ Done | Backend skeleton + DB + REST API |
-| v1.1 W2 | ✅ Done | LLM integration + Planner + frontend-backend integration |
-| v1.1 W2.5 | ✅ Done | Streaming UX fixes + custom agents |
-| v1.1 W3 | ✅ Done | Monaco Editor + iframe CSP + Diff Editor |
-| v2.0 W1 | ✅ Done | AgentHub-V2 decoupling refactor + parallel workflow |
-| v2.0 W1.5 | ✅ Done | Artifact preview fixes + DB persistence + DELETE API |
-| v2.1 W1 | ✅ Done | Orchestrator 2.0 (classifier/supervisor/blackboard/critic/synthesizer/trace/stall/saga) + 133 tests |
-| v2.1 W2 | ✅ Done | Full-chain fixes: DAG deadlock, context flow, GenUI pause/resume, message persistence, artifact dedup, stream truncation, routing, model switch |
-| v2.1 W2.5 | ✅ Done | Mock-First artifact interactivity upgrade + model upgrade to deepseek-v4-pro |
-
----
-
-## 🧠 Key Architecture Decisions
-
-1. **Self-Built Orchestrator** — No CrewAI/LangGraph dependency. The IM interaction paradigm requires custom scheduling.
-2. **Planner Dual Path** — Keyword fast-path (<100ms) + LLM intelligent-path (~2s).
-3. **Drizzle ORM** — Lighter than Prisma, SQL-like API.
-4. **Agent Adapter Pattern** — `IAgent` unified interface + RemoteAgent (backend API) / Mock (fallback).
-5. **SSE Streaming + WebSocket Push** — SSE for chat streaming, WS for real-time events.
-6. **Optimistic Update + Rollback** — Frontend updates Zustand instantly; rolls back state + notifies user on API failure.
-7. **Artifact Content Sniffing** — `looksLikeWebpage()` detects HTML tags/DOCTYPE, overriding `artifact.type` to prevent LLM mislabeling.
-8. **iframe Triple-Layer Security** — CSP meta tags (outer) + AgentHub.util runtime injection (middle) + sandbox attribute (inner isolation).
-9. **DAG Fault-Tolerant Scheduling** — Upstream failures don't block downstream; downstream continues with `⚠️ upstream failed` warning. Exponential backoff retry + agent degradation.
-10. **GenUI Pause/Resume** — Agent outputs interactive components → task enters `paused` state → waits for user input → resumes. 30-min timeout with auto-degradation.
-11. **Unified Persistence Facade** — `addMsg()` auto-persists to DB; streaming messages deferred until `streaming: false`. Covers all message paths (user/agent/plan card/system).
-12. **Same-Round Artifact Dedup** — Artifacts with identical names within one orchestration round get agent-specific suffixes to prevent version explosion.
-13. **max_tokens=8192** — DeepSeek's 4096 token limit truncated HTML before tag closure; 8192 covers full webpage generation.
-14. **Full-Chain Backend Logging** — Colorful structured logs: request → LLM streaming progress (every 5s) → full response → timing/char stats → error details.
+| 阶段 | 状态 | 内容 |
+|------|------|------|
+| v1.0 MVP | ✅ 已完成 | 纯前端 Mock，IM 范式验证 |
+| v1.1 W1 | ✅ 已完成 | 后端骨架 + DB + REST API |
+| v1.1 W2 | ✅ 已完成 | LLM 真实接入 + Planner + 前后端联调 |
+| v1.1 W2.5 | ✅ 已完成 | 流式 UX 修复 + 自建 Agent |
+| v1.1 W3 | ✅ 已完成 | Monaco Editor + iframe CSP + Diff Editor |
+| v2.0 W1 | ✅ 已完成 | AgentHub-V2 功能解耦重构 + Workflow 并行开发 |
+| v2.0 W1.5 | ✅ 已完成 | 产物预览修复 + DB 持久化 BugFix + DELETE API |
+| v2.1 W1 | ✅ 已完成 | Orchestrator 2.0 智能多 Agent 编排器（分类器/监督者/选择器/黑板/评论家/合成器/追踪/卡顿检测/Saga）+ 133 测试 |
+| v2.1 W2 | ✅ 已完成 | 全链路修复：DAG 死锁 + 上下文流转 + GenUI 暂停/恢复 + 消息持久化 + 产物去重 + 流截断修复 + 路由修复 + 模型切换 |
+| v2.1 W2.5 | ✅ 已完成 | Mock-First 产物交互性升级 + 模型升级 deepseek-v4-pro |
 
 ---
 
-## 🔧 Development Guide
+## 🧠 关键架构决策
 
-### LLM Configuration
+1. **自研编排器** — 不绑定 CrewAI/LangGraph，IM 交互范式需要定制调度。
+2. **Planner 双路径** — 关键词快路径 (<100ms) + LLM 智路径 (~2s)。
+3. **Drizzle ORM** — 比 Prisma 更轻量，SQL-like API。
+4. **Agent 适配器模式** — `IAgent` 统一接口 + RemoteAgent (后端 API) / Mock (回退)。
+5. **SSE 流式 + WebSocket 推送** — 聊天用 SSE，实时事件用 WS。
+6. **乐观更新 + 失败回滚** — 前端先更新 Zustand 获得即时响应，API 失败时回滚状态 + 系统消息通知用户。
+7. **产物类型内容嗅探** — `looksLikeWebpage()` 检测 HTML 标签/DOCTYPE，优先于 `artifact.type` 字段，避免 LLM 误标注导致预览失败。
+8. **iframe 三层安全** — CSP meta 标签（外层限制） + AgentHub.util 运行时注入（中层错误处理） + sandbox 属性（内层隔离）。
+9. **DAG 容错调度** — 上游任务失败不阻塞下游，下游带 `⚠️ 上游失败` 警告继续执行；指数退避重试 + 降级 Agent 切换。
+10. **GenUI 暂停/恢复** — Agent 输出交互组件时任务进入 `paused` 状态，等待用户输入后恢复；30 分钟无响应自动降级。
+11. **统一持久化门面** — `addMsg()` 内部自动持久化到 DB，流式消息在 `streaming: false` 时延迟写入；覆盖所有消息路径（用户/Agent/计划卡/系统通知）。
+12. **产物同轮去重** — 同一编排轮次内不同 Agent 产出同名产物时用 Agent 后缀区分，避免版本号激增。
+13. **max_tokens=8192** — DeepSeek 4096 token 限制导致 HTML 长输出在围栏闭合前截断，上调至 8192 覆盖完整网页生成。
+14. **后端全链路日志** — 彩色结构化日志：请求 → LLM 流式进度（每 5s）→ 完整响应内容 → 耗时/字符统计 → 错误详情。
 
-- **Development**: All agents use DeepSeek `deepseek-v4-pro` (configure `DEEPSEEK_API_KEY` in `server/.env`)
-- **Production**: Per-vendor routing — `claude` → Anthropic, `codex` → OpenAI
+---
 
-### Database
+## 🔧 开发指南
+
+### LLM 配置
+
+- **开发环境**: 所有 Agent 统一走 DeepSeek `deepseek-v4-pro`（在 `server/.env` 中配置 `DEEPSEEK_API_KEY`）
+- **生产环境**: 按厂商分流 — `claude` → Anthropic，`codex` → OpenAI
+
+### 数据库操作
 
 ```bash
-docker exec agenthub-postgres psql -U agenthub -d agenthub -c "\dt"  # List tables
-cd server && npx drizzle-kit push    # Sync schema
+docker exec agenthub-postgres psql -U agenthub -d agenthub -c "\dt"  # 查看表
+cd server && npx drizzle-kit push    # 同步表结构
 ```
 
-### Running Tests
+### 运行测试
 
 ```bash
-cd server && npm test        # Backend: 28 tests (orchestrator + LLM gateway)
-cd agenthub-mvp && npm test   # Frontend: component + unit tests
+cd server && npm test        # 后端: 28 个测试（编排器 + LLM Gateway）
+cd agenthub-mvp && npm test   # 前端: 组件 + 单元测试
 ```
 
-### Commit Convention
+### Commit 规范
 
 ```
-feat:     New feature
-fix:      Bug fix
-style:    UI/style changes
-docs:     Documentation
-refactor: Code refactoring
-chore:    Miscellaneous
+feat:     新功能
+fix:      修复
+style:    样式
+docs:     文档
+refactor: 重构
+chore:    杂项
 ```
 
 ---
 
-## 📄 License
+## 📄 许可证
 
 MIT

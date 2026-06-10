@@ -250,6 +250,15 @@ export async function deleteArtifactVersion(artifactId: string, versionId: strin
   if (!res.ok) throw await readError(res, `Failed to delete version: ${res.status}`);
 }
 
+// ── Export artifact as PDF ──
+export async function exportArtifactPdf(artifactId: string): Promise<Response> {
+  const res = await fetch(`${API_BASE}/artifacts/${artifactId}/export/pdf`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw await readError(res, `Failed to export PDF: ${res.status}`);
+  return res;
+}
+
 // ── Skills ──
 export interface SkillDTO {
   id: string;

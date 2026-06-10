@@ -3,6 +3,7 @@ import { eq, desc } from 'drizzle-orm';
 import { db, artifacts, artifactVersions } from '../db/index.js';
 import { v4 as uuid } from 'uuid';
 import { broadcastToConversation } from '../ws/wsServer.js';
+import { generatePdf } from '../services/pdfGenerator.js';
 
 export const artifactsRouter = Router();
 
@@ -327,5 +328,45 @@ artifactsRouter.delete('/:id/versions/:versionId', async (req, res) => {
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/artifacts/:id/export/pdf — export artifact as PDF
+artifactsRouter.post('/:id/export/pdf', async (req, res) => {
+  try {
+    const artifactId = req.params.id;
+
+    const [artifact] = await db
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.id, artifactId))
+      .limit(1);
+
+    if (!artifact) return res.status(404).json({ error: 'Artifact not found' });
+
+    const [latestVersion] = await db
+      .select()
+      .from(artifactVersions)
+      .where(eq(artifactVersions.artifactId, artifactId))
+      .orderBy(desc(artifactVersions.version))
+      .limit(1);
+
+    if (!latestVersion || !latestVersion.content) {
+      return res.status(400).json({ error: 'Artifact has no content' });
+    }
+
+    const pdfBuffer = await generatePdf(latestVersion.content, artifact.name);
+
+    // Sanitize filename for Content-Disposition header (RFC 5987 UTF-8 encoding)
+    const rawName = (artifact.name || 'document').replace(/[<>:"/\\|?*]/g, '_').replace(/\.(md|txt)$/i, '');
+    const safeAscii = rawName.replace(/[^\x00-\x7F]/g, '_') || 'document';
+    const encodedName = encodeURIComponent(rawName);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeAscii}.pdf"; filename*=UTF-8''${encodedName}.pdf`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    res.send(pdfBuffer);
+  } catch (err: any) {
+    console.error('[PDF Export] Error:', err.message);
+    res.status(500).json({ error: err.message || 'PDF generation failed' });
   }
 });

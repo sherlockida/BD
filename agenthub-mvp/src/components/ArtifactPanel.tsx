@@ -5,7 +5,9 @@ import type { Artifact, ArtifactVersion, ID, SelectionContext } from '../types';
 import {
   X, Code2, Globe, FileText, Rocket, RotateCcw, Eye, GitBranch,
   Layers, ChevronRight, Copy, RefreshCw, ExternalLink, Trash2,
+  Download, Loader2,
 } from './icons';
+import { downloadBlob, downloadPdf } from '../utils/download';
 
 type PanelTab = 'preview' | 'code' | 'diff' | 'history';
 
@@ -129,6 +131,18 @@ export function ArtifactPanel() {
           </select>
         )}
         <button
+          onClick={() => {
+            if (!version) return;
+            downloadBlob(version.content, artifact.name || 'document', 'text/markdown;charset=utf-8');
+          }}
+          className="text-xs px-2 py-1 rounded hover:bg-feishu-accent/10 text-feishu-subtext hover:text-feishu-text transition flex items-center gap-1"
+          title="下载 Markdown 源文件"
+        >
+          <Download size={12} /> .md
+        </button>
+        <PdfExportBtn artifactId={artifact.id} artifactName={artifact.name} />
+        <div className="w-px h-5 bg-feishu-border mx-0.5" />
+        <button
           onClick={() => activeConvId && deploy(artifact.id, activeConvId)}
           className="text-xs px-2.5 py-1 rounded-md bg-feishu-accent text-white hover:opacity-90 flex items-center gap-1 transition mr-2"
         >
@@ -210,6 +224,37 @@ export function ArtifactPanel() {
         )}
       </div>
     </Side>
+  );
+}
+
+function PdfExportBtn({ artifactId, artifactName }: { artifactId: ID; artifactName: string }) {
+  const [loading, setLoading] = useState(false);
+
+  const handleExport = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (loading) return;
+    setLoading(true);
+    try {
+      const pdfName = (artifactName || 'document').replace(/\.md$/, '') + '.pdf';
+      await downloadPdf(`/api/artifacts/${artifactId}/export/pdf`, pdfName);
+    } catch (err: any) {
+      console.error('[PDF Export]', err);
+      alert('PDF 导出失败：' + (err.message || '未知错误'));
+    } finally {
+      setLoading(false);
+    }
+  }, [artifactId, artifactName, loading]);
+
+  return (
+    <button
+      onClick={handleExport}
+      disabled={loading}
+      className="text-xs px-2 py-1 rounded hover:bg-feishu-accent/10 text-feishu-subtext hover:text-feishu-text transition flex items-center gap-1 disabled:opacity-50"
+      title="导出 PDF"
+    >
+      {loading ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+      PDF
+    </button>
   );
 }
 
