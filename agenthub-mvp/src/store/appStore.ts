@@ -7,6 +7,7 @@ import {
   addArtifactVersion as apiAddArtifactVersion,
   rollbackArtifact as apiRollbackArtifact,
   deleteArtifact as apiDeleteArtifact,
+  deleteConversation as apiDeleteConversation,
   deleteArtifactVersion as apiDeleteArtifactVersion,
   createSkill as apiCreateSkill,
   triggerDeploy as apiTriggerDeploy,
@@ -17,6 +18,7 @@ import {
   getArtifact as apiGetArtifact,
   listSkills as apiListSkills,
   planTasks as apiPlanTasks,
+  updateConversation as apiUpdateConversation,
 } from '../api/client';
 import type {
   Conversation,
@@ -67,6 +69,9 @@ interface AppState {
   createConversation(opts: { type: 'single' | 'group'; memberAgentIds: ID[]; title?: string }): Conversation;
   setActiveConversation(id: ID): void;
   archiveConversation(id: ID): void;
+  pinConversation(id: ID): void;
+  renameConversation(id: ID, title: string): void;
+  deleteConversation(id: ID): void;
   togglePinMessage(messageId: ID): void;
   setArtifactPanelOpen(open: boolean): void;
   openArtifact(id: ID): void;
@@ -324,6 +329,95 @@ export const useAppStore = create<AppState>((set, get) => {
       set(s => ({
         conversations: s.conversations.map(c => (c.id === id ? { ...c, archived: !c.archived } : c)),
       }));
+    },
+
+    pinConversation(id) {
+      const conv = get().conversations.find(c => c.id === id);
+      if (!conv) return;
+      const newPinned = !conv.pinned;
+      set(s => ({
+        conversations: s.conversations.map(c =>
+          c.id === id ? { ...c, pinned: newPinned } : c,
+        ),
+      }));
+      apiUpdateConversation(id, { pinned: newPinned }).catch(err => {
+        console.warn('[persist] pinConversation failed:', err.message);
+        set(s => ({
+          conversations: s.conversations.map(c =>
+            c.id === id ? { ...c, pinned: !newPinned } : c,
+          ),
+        }));
+        if (get().messagesByConv[id]) {
+          set(s => addMsg(s, id, {
+            id: genUuid(),
+            conversationId: id,
+            senderType: 'system',
+            senderId: 'system',
+            content: { kind: 'system', text: `⚠️ 置顶操作失败：${err.message}` },
+            createdAt: Date.now(),
+          }));
+        }
+      });
+    },
+
+    renameConversation(id, title) {
+      const conv = get().conversations.find(c => c.id === id);
+      if (!conv || !title.trim()) return;
+      const oldTitle = conv.title;
+      set(s => ({
+        conversations: s.conversations.map(c =>
+          c.id === id ? { ...c, title: title.trim() } : c,
+        ),
+      }));
+      apiUpdateConversation(id, { title: title.trim() }).catch(err => {
+        console.warn('[persist] renameConversation failed:', err.message);
+        set(s => ({
+          conversations: s.conversations.map(c =>
+            c.id === id ? { ...c, title: oldTitle } : c,
+          ),
+        }));
+      });
+    },
+
+    deleteConversation(id) {
+      const conv = get().conversations.find(c => c.id === id);
+      if (!conv) return;
+      const snapshot = { conv, messages: get().messagesByConv[id] ?? [] };
+      const wasActive = get().activeConversationId === id;
+      set(s => {
+        const { [id]: _, ...restMessages } = s.messagesByConv;
+        const sorted = s.conversations.filter(c => c.id !== id).sort((a, b) => {
+          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+          return b.lastActivityAt - a.lastActivityAt;
+        });
+        return {
+          ...s,
+          conversations: sorted,
+          messagesByConv: restMessages,
+          activeConversationId: wasActive ? (sorted[0]?.id ?? null) : s.activeConversationId,
+        };
+      });
+      apiDeleteConversation(id).catch(err => {
+        console.warn('[persist] deleteConversation failed:', err.message);
+        set(s => ({
+          conversations: [...s.conversations, snapshot.conv].sort((a, b) => {
+            if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+            return b.lastActivityAt - a.lastActivityAt;
+          }),
+          messagesByConv: { ...s.messagesByConv, [id]: snapshot.messages },
+          activeConversationId: s.activeConversationId ?? (wasActive ? id : s.activeConversationId),
+        }));
+        if (get().messagesByConv[id]) {
+          set(s => addMsg(s, id, {
+            id: genUuid(),
+            conversationId: id,
+            senderType: 'system',
+            senderId: 'system',
+            content: { kind: 'system', text: `⚠️ 删除对话失败：${err.message}` },
+            createdAt: Date.now(),
+          }));
+        }
+      });
     },
 
     togglePinMessage(messageId) {
@@ -865,7 +959,10 @@ export const useAppStore = create<AppState>((set, get) => {
         }));
 
         set(s => ({
-          conversations: convs.sort((a, b) => b.lastActivityAt - a.lastActivityAt),
+          conversations: convs.sort((a, b) => {
+            if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+            return b.lastActivityAt - a.lastActivityAt;
+          }),
           messagesByConv: Object.fromEntries(messagesEntries),
           artifacts: artsFull.filter(Boolean) as Artifact[],
           skills: skillsLocal.length > 0 ? skillsLocal : s.skills,

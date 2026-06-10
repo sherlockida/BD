@@ -75,6 +75,24 @@ export async function createConversation(body: {
   return res.json();
 }
 
+export async function updateConversation(
+  id: string,
+  body: { title?: string; pinned?: boolean; archived?: boolean },
+): Promise<ConversationDTO> {
+  const res = await fetch(`${API_BASE}/conversations/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res, `Failed to update conversation: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/conversations/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw await readError(res, `Failed to delete conversation: ${res.status}`);
+}
+
 // ── Messages ──
 export async function listMessages(
   convId: string,
@@ -282,6 +300,7 @@ export interface AgentChunk {
   tool?: string;
   args?: unknown;
   error?: string;
+  finishReason?: string | null;
 }
 
 /**

@@ -42,10 +42,12 @@ export {
   Maximize2,
   Minimize2,
   Eye,
+  Ellipsis,
   BookOpen,
   Lightbulb,
   Layers,
   PanelRightOpen,
   PanelRightClose,
   PauseCircle,
+  Pencil,
 } from 'lucide-react';

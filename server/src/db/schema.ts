@@ -47,6 +47,7 @@ export const conversations = pgTable('conversations', {
   memberAgentIds: text('member_agent_ids').array().notNull().default([]),
   pinnedMessageIds: text('pinned_message_ids').array().default([]),
   archived: boolean('archived').default(false),
+  pinned: boolean('pinned').default(false),
   createdBy: uuid('created_by').references(() => users.id),
   lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).defaultNow(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),

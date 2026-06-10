@@ -151,15 +151,16 @@ export function createFenceExtractor() {
     return out;
   }
 
-  function flush(): AgentChunk[] {
+  function flush(finishReason?: string | null): AgentChunk[] {
     const out: AgentChunk[] = [];
     if (state.kind === 'outside') {
       if (state.pending) out.push({ type: 'text', delta: state.pending });
     } else {
-      // 流结束时仍在 inside：当不完整代码块，把已收到的 buf+pending 当 artifact
-      // 保护：如果内容为空就丢弃
+      // 流结束时仍在 inside：LLM 没来得及闭合 ``` 围栏
+      // 根据 finish_reason 判定：'length' = 真截断，'stop'/null = 正常完成（仅缺闭合围栏）
       const content = (state.buf + state.pending).replace(/\n$/, '');
       if (content.trim().length > 0) {
+        const truncated = finishReason === 'length';
         // GenUI: try parse as JSON component
         if (state.lang === 'ui' || state.lang === 'genui') {
           try {
@@ -177,7 +178,7 @@ export function createFenceExtractor() {
             name,
             language: state.lang || undefined,
             content,
-            commitMessage: 'Agent 生成（流意外结束）',
+            commitMessage: truncated ? 'Agent 生成（流意外结束）' : 'Agent 生成',
           });
         }
       }

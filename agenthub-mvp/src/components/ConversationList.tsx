@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useAppStore } from '../store/appStore';
 import type { Conversation } from '../types';
+import { ConversationMenu } from './ConversationMenu';
 import {
-  MessageSquarePlus, Search, Hash, Bot, Archive, ArchiveRestore, Users, Sparkles,
+  MessageSquarePlus, Search, Hash, Bot, Pin, Archive, ArchiveRestore, Users, Sparkles, Ellipsis,
 } from './icons';
 
 export function ConversationList({ onNewChat }: { onNewChat: () => void }) {
@@ -11,15 +12,26 @@ export function ConversationList({ onNewChat }: { onNewChat: () => void }) {
   const activeId = useAppStore(s => s.activeConversationId);
   const setActive = useAppStore(s => s.setActiveConversation);
   const archive = useAppStore(s => s.archiveConversation);
+  const pinConv = useAppStore(s => s.pinConversation);
+  const renameConv = useAppStore(s => s.renameConversation);
+  const deleteConv = useAppStore(s => s.deleteConversation);
   const openMarket = useAppStore(s => s.setAgentMarketOpen);
   const openSkills = useAppStore(s => s.setSkillsDrawerOpen);
   const [q, setQ] = useState('');
   const [showArchived, setShowArchived] = useState(false);
+  const [menuConvId, setMenuConvId] = useState<string | null>(null);
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState('');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const filtered = conversations
     .filter(c => (showArchived ? c.archived : !c.archived))
     .filter(c => c.title.toLowerCase().includes(q.toLowerCase()))
-    .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+    .sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return b.lastActivityAt - a.lastActivityAt;
+    });
 
   const renderConv = (c: Conversation) => {
     const memberAgents = c.memberAgentIds
@@ -48,7 +60,25 @@ export function ConversationList({ onNewChat }: { onNewChat: () => void }) {
         )}
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between">
-            <div className="font-medium text-sm truncate text-feishu-text">{c.title}</div>
+            {renamingId === c.id ? (
+              <input
+                value={renameText}
+                onChange={e => setRenameText(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { renameConv(c.id, renameText); setRenamingId(null); }
+                  if (e.key === 'Escape') setRenamingId(null);
+                }}
+                onBlur={() => setRenamingId(null)}
+                autoFocus
+                className="font-medium text-sm bg-feishu-bg border border-feishu-accent rounded px-1.5 py-0.5 w-full outline-none"
+                onClick={e => e.stopPropagation()}
+              />
+            ) : (
+              <div className="flex items-center gap-1 min-w-0">
+                {c.pinned && <Pin size={10} className="text-feishu-accent shrink-0" />}
+                <div className="font-medium text-sm truncate text-feishu-text">{c.title}</div>
+              </div>
+            )}
             <div className="text-[10px] text-feishu-subtext shrink-0 ml-2">
               {formatTime(c.lastActivityAt)}
             </div>
@@ -64,6 +94,18 @@ export function ConversationList({ onNewChat }: { onNewChat: () => void }) {
           title={c.archived ? '取消归档' : '归档'}
         >
           {c.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            const rect = (e.target as HTMLElement).getBoundingClientRect();
+            setMenuPos({ x: rect.left - 140, y: rect.bottom + 4 });
+            setMenuConvId(menuConvId === c.id ? null : c.id);
+          }}
+          className="opacity-0 group-hover:opacity-100 text-feishu-subtext hover:text-feishu-text transition"
+          title="更多操作"
+        >
+          <Ellipsis size={14} />
         </button>
       </div>
     );
@@ -97,6 +139,14 @@ export function ConversationList({ onNewChat }: { onNewChat: () => void }) {
       </div>
 
       <div className="flex-1 overflow-y-auto py-2">
+        {filtered.some(c => c.pinned) && (
+          <div className="px-3 py-1 text-[10px] font-medium text-feishu-subtext/60 uppercase tracking-wider">
+            置顶
+          </div>
+        )}
+        {filtered.some(c => c.pinned) && filtered.some(c => !c.pinned) && (
+          <div className="mx-3 my-1 border-t border-feishu-border/50" />
+        )}
         {filtered.length === 0 && (
           <div className="text-center text-feishu-subtext text-xs py-12">
             还没有{showArchived ? '已归档' : ''}对话
@@ -128,6 +178,39 @@ export function ConversationList({ onNewChat }: { onNewChat: () => void }) {
           <Archive size={13} />
         </button>
       </div>
+      {menuConvId && (() => {
+        const c = conversations.find(x => x.id === menuConvId);
+        if (!c) return null;
+        return (
+          <ConversationMenu
+            conversationId={c.id}
+            isPinned={!!c.pinned}
+            isArchived={!!c.archived}
+            x={menuPos.x}
+            y={menuPos.y}
+            onClose={() => setMenuConvId(null)}
+            onPin={() => { pinConv(c.id); setMenuConvId(null); }}
+            onRename={() => { setRenamingId(c.id); setRenameText(c.title); setMenuConvId(null); }}
+            onArchive={() => { archive(c.id); setMenuConvId(null); }}
+            onDelete={() => { setDeletingId(c.id); setMenuConvId(null); }}
+          />
+        );
+      })()}
+
+      {deletingId && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={() => setDeletingId(null)}>
+          <div className="bg-feishu-panel rounded-lg p-5 shadow-xl max-w-sm w-full mx-4" onClick={e => e.stopPropagation()}>
+            <div className="font-medium text-feishu-text mb-2">删除对话</div>
+            <div className="text-sm text-feishu-subtext mb-4">
+              确定删除"{conversations.find(c => c.id === deletingId)?.title ?? ''}"？此操作不可撤销。
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setDeletingId(null)} className="px-3 py-1.5 text-sm text-feishu-subtext hover:text-feishu-text rounded-md hover:bg-feishu-hover">取消</button>
+              <button onClick={() => { deleteConv(deletingId); setDeletingId(null); }} className="px-3 py-1.5 text-sm bg-red-500 text-white rounded-md hover:bg-red-600">删除</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

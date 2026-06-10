@@ -155,9 +155,10 @@ chore: 杂项
 | v2.0 W1.5 | ✅ 已完成 | 产物预览修复 + DB 持久化 BugFix + DELETE API |
 | v2.1 W1 | ✅ 已完成 | Orchestrator 2.0 智能多Agent编排器实现（classifier/supervisor/agentSelector/blackboard/critic/synthesizer/trace/stall/saga）+ 133 tests |
 | v2.1 W2 | ✅ 已完成 | 全链路修复：DAG死锁 + 上下文流转 + GenUI暂停/恢复 + 消息持久化 + 产物去重 + 流截断修复 + 路由修复 + 模型切换deepseek-v4-flash |
+| v2.1 W2.5 | ✅ 已完成 | Mock-First 产物交互性升级 + 模型升级 deepseek-v4-pro |
 
 ### LLM 配置
-- 开发环境: 所有 Agent 统一走 DeepSeek `deepseek-v4-flash`
+- 开发环境: 所有 Agent 统一走 DeepSeek `deepseek-v4-pro`
 - DEEPSEEK_API_KEY 在 `server/.env` 中配置
 - 生产环境按 vendor 分流: claude→Anthropic, codex→OpenAI
 - `express.json` body 限制上调至 10MB（默认100KB不足以承载完整产物上下文）

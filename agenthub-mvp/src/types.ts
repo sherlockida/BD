@@ -43,6 +43,7 @@ export interface Conversation {
   memberAgentIds: ID[];      // 群内 agent
   pinnedMessageIds: ID[];
   archived?: boolean;
+  pinned?: boolean;
   lastActivityAt: number;
   unread?: number;
 }

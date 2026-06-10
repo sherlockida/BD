@@ -102,7 +102,7 @@ export class RemoteAgent implements IAgent {
             yield { type: 'error', error: chunk.error ?? 'Unknown error' };
             return;
           case 'done':
-            for (const ch of extractor.flush()) yield ch;
+            for (const ch of extractor.flush(chunk.finishReason)) yield ch;
             yield { type: 'done' };
             return;
         }

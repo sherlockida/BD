@@ -10,12 +10,12 @@ conversationsRouter.get('/', async (req, res) => {
   try {
     const includeArchived = req.query.archived === 'true';
     const rows = includeArchived
-      ? await db.select().from(conversations).orderBy(desc(conversations.lastActivityAt))
+      ? await db.select().from(conversations).orderBy(desc(conversations.pinned), desc(conversations.lastActivityAt))
       : await db
           .select()
           .from(conversations)
           .where(eq(conversations.archived, false))
-          .orderBy(desc(conversations.lastActivityAt));
+          .orderBy(desc(conversations.pinned), desc(conversations.lastActivityAt));
     res.json(rows);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

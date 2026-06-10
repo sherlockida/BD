@@ -16,7 +16,7 @@ export type AgentChunk =
   | { type: 'code'; language: string; filename?: string; code: string }
   | { type: 'artifact-draft'; artifactType: string; name: string; language?: string; content: string; commitMessage: string }
   | { type: 'tool-call'; tool: string; args: unknown }
-  | { type: 'done' }
+  | { type: 'done'; finishReason?: string | null }
   | { type: 'error'; error: string };
 
 // ── Message format ──
@@ -226,6 +226,7 @@ async function* chatWithGPT(params: LlmChatParams, vendor: LlmVendor): AsyncIter
   const startTime = Date.now();
   let fullText = '';
   let lastProgressTime = startTime;
+  let finishReason: string | null = null;
 
   try {
     const stream = await client.chat.completions.create({
@@ -238,6 +239,7 @@ async function* chatWithGPT(params: LlmChatParams, vendor: LlmVendor): AsyncIter
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content;
+      finishReason = chunk.choices[0]?.finish_reason ?? finishReason;
       if (delta) {
         fullText += delta;
         yield { type: 'text', delta };
@@ -253,7 +255,7 @@ async function* chatWithGPT(params: LlmChatParams, vendor: LlmVendor): AsyncIter
     const durationMs = Date.now() - startTime;
     log.llmResponse(fullText, durationMs);
     log.agentDone(vendor, vendor, fullText.length, durationMs);
-    yield { type: 'done' };
+    yield { type: 'done', finishReason };
   } catch (err: any) {
     const durationMs = Date.now() - startTime;
     log.agentError(vendor, vendor, `OpenAI API error: ${err.message}`, `streaming (${durationMs}ms, ${fullText.length}chars received before error)`);
@@ -263,7 +265,7 @@ async function* chatWithGPT(params: LlmChatParams, vendor: LlmVendor): AsyncIter
 
 async function* chatWithDeepSeek(params: LlmChatParams, vendor: LlmVendor): AsyncIterable<AgentChunk> {
   const client = getDeepSeek();
-  const model = 'deepseek-v4-flash';
+  const model = 'deepseek-v4-pro';
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   if (params.systemPrompt) {
@@ -279,6 +281,7 @@ async function* chatWithDeepSeek(params: LlmChatParams, vendor: LlmVendor): Asyn
   const startTime = Date.now();
   let fullText = '';
   let lastProgressTime = startTime;
+  let finishReason: string | null = null;
 
   try {
     const stream = await client.chat.completions.create({
@@ -291,6 +294,7 @@ async function* chatWithDeepSeek(params: LlmChatParams, vendor: LlmVendor): Asyn
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content;
+      finishReason = chunk.choices[0]?.finish_reason ?? finishReason;
       if (delta) {
         fullText += delta;
         yield { type: 'text', delta };
@@ -308,7 +312,7 @@ async function* chatWithDeepSeek(params: LlmChatParams, vendor: LlmVendor): Asyn
     const durationMs = Date.now() - startTime;
     log.llmResponse(fullText, durationMs);
     log.agentDone(vendor, vendor, fullText.length, durationMs);
-    yield { type: 'done' };
+    yield { type: 'done', finishReason };
   } catch (err: any) {
     const durationMs = Date.now() - startTime;
     // ── Log: detailed error ──
@@ -375,7 +379,7 @@ export async function chatWithAgentSync(
 
   // OpenAI / DeepSeek (both use OpenAI-compatible API)
   const client = provider === 'openai' ? getOpenAI() : getDeepSeek();
-  const model = provider === 'openai' ? 'gpt-5' : 'deepseek-v4-flash';
+  const model = provider === 'openai' ? 'gpt-5' : 'deepseek-v4-pro';
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   if (params.systemPrompt) {
