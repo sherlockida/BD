@@ -270,7 +270,7 @@ export async function createSkill(body: {
 
 // ── Agent Chat (SSE streaming) ──
 export interface AgentChunk {
-  type: 'text' | 'code' | 'artifact-draft' | 'tool-call' | 'done' | 'error';
+  type: 'text' | 'code' | 'artifact-draft' | 'tool-call' | 'ui-component' | 'done' | 'error';
   delta?: string;
   language?: string;
   filename?: string;

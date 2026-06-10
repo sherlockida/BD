@@ -16,6 +16,7 @@ import {
   listArtifacts as apiListArtifacts,
   getArtifact as apiGetArtifact,
   listSkills as apiListSkills,
+  planTasks as apiPlanTasks,
 } from '../api/client';
 import type {
   Conversation,
@@ -34,7 +35,10 @@ import type {
 import { uid, sleep, genUuid } from '../utils/id';
 import { diffLines } from '../utils/diff';
 import { agentRegistry } from '../agents/registry';
-import { planTasks, schedule, summarize, ORCHESTRATOR_META } from '../orchestrator';
+import { schedule, resumePausedTask, summarize, ORCHESTRATOR_META, inferCapabilities, reviewTask, generateCriticReport, getBlackboard, createBlackboard } from '../orchestrator';
+import { selectAgent } from '../orchestrator/agentSelector';
+import type { AgentSelectionContext } from '../orchestrator/agentSelector';
+import type { ReviewResult } from '../orchestrator';
 
 // ────────────────────────────────────────────────────────────
 // AppStore — 统一的全局状态（MVP 阶段，避免多 store 同步成本）
@@ -1078,10 +1082,81 @@ async function runOrchestrated(get: GetState, set: SetState, convId: ID, userTex
     .map(id => get().agents.find(a => a.id === id))
     .filter((x): x is Agent => !!x && x.id !== 'agent_orchestrator');
 
-  // 1) Planner
-  const plan = planTasks(userText, availableAgents);
+  if (availableAgents.length === 0) {
+    console.warn('[Orchestrator] No available agents for orchestration');
+    return;
+  }
 
-  // 2) PMO 在群里发一条 plan card
+  // 1) Plan via backend API (keyword fast-path + LLM smart-path, single source of truth)
+  let plan: OrchestratorPlan;
+  try {
+    const raw = await apiPlanTasks(userText);
+    plan = raw as OrchestratorPlan;
+    console.log(`[Orchestrator] Backend plan: ${plan.subTasks.length} tasks, complexity=${plan.complexity ?? 'unknown'}`);
+  } catch (err) {
+    console.warn('[Orchestrator] Backend planner unavailable, using local fallback:', err);
+    const capResult = selectAgent({
+      availableAgents,
+      requiredCapabilities: [],
+      activeTaskCounts: new Map(),
+      performanceHistory: [],
+      failurePenaltyMap: agentFailureCounts,
+    });
+    plan = {
+      id: genUuid(),
+      intent: userText,
+      summary: '后端规划暂不可用，单Agent直接执行',
+      subTasks: [{
+        id: genUuid(),
+        title: '响应用户请求',
+        description: userText,
+        assignedAgentId: capResult.selectedAgentId,
+        fallbackAgentId: capResult.fallbackAgentId,
+        dependsOn: [],
+        status: 'pending',
+        acceptanceCriteria: ['满足用户需求'],
+        retryCount: 0,
+      }],
+      status: 'running',
+      complexity: 'simple',
+      createdAt: Date.now(),
+    };
+    // Notify user of degraded planning
+    set(s => addMsg(s, convId, {
+      id: genUuid(),
+      conversationId: convId,
+      senderType: 'system',
+      senderId: 'system',
+      content: { kind: 'system', text: '⚠️ 后端规划暂不可用，使用本地简化规划' },
+      createdAt: Date.now(),
+    }));
+  }
+
+  // 2) Fill in missing agent assignments
+  const activeCounts = new Map<string, number>();
+  const assignedSoFar: SubTask[] = [];
+  for (const task of plan.subTasks) {
+    const agentExists = task.assignedAgentId && availableAgents.some(a => a.id === task.assignedAgentId);
+    if (!agentExists) {
+      const caps = (plan.complexity === 'simple' || plan.complexity === undefined)
+        ? []
+        : inferCapabilities(task);
+      const result = selectAgent({
+        availableAgents,
+        requiredCapabilities: caps.length > 0 ? caps : ['code'],
+        activeTaskCounts: activeCounts,
+        performanceHistory: [],
+        currentPlanTasks: assignedSoFar,
+        failurePenaltyMap: agentFailureCounts,
+      });
+      task.assignedAgentId = result.selectedAgentId;
+      task.fallbackAgentId = result.fallbackAgentId;
+      activeCounts.set(result.selectedAgentId, (activeCounts.get(result.selectedAgentId) ?? 0) + 1);
+    }
+    assignedSoFar.push(task);
+  }
+
+  // 3) PMO sends plan card to chat
   const planMsg: Message = {
     id: genUuid(),
     conversationId: convId,
@@ -1092,100 +1167,485 @@ async function runOrchestrated(get: GetState, set: SetState, convId: ID, userTex
   };
   set(s => addMsg(s, convId, planMsg));
 
-  // 跟踪 task → message 映射
+  // Track task → message mapping
   const taskToMsgId = new Map<string, ID>();
+  // Phase 3: track paused tasks (taskId → UI component info)
+  const pausedTasks = new Map<string, { agentId: string; component: string; props: Record<string, unknown> }>();
+  // Phase 3: user inputs collected during session
+  const userInputs = new Map<string, string>();
+  // Track streaming char counts per task for real-time indicator
+  const streamedCharCount = new Map<string, number>();
 
-  await schedule(
-    plan,
-    { conversation: conv, history: get().messagesByConv[convId] ?? [] },
-    {
-      onTaskStart(task: SubTask) {
-        // 为这个任务创建一条流式 agent 消息
-        const m: Message = {
+  const scheduleCtx = { conversation: conv, history: get().messagesByConv[convId] ?? [] };
+
+  // Init blackboard for this plan so snapshot is available later
+  createBlackboard(plan.id, plan.subTasks.length);
+
+  await schedule(plan, scheduleCtx, {
+    onTaskStart(task: SubTask) {
+      const m: Message = {
+        id: genUuid(),
+        conversationId: convId,
+        senderType: 'agent',
+        senderId: task.assignedAgentId,
+        content: { kind: 'text', text: '' },
+        createdAt: Date.now(),
+        streaming: true,
+      };
+      taskToMsgId.set(task.id, m.id);
+      set(s => addMsg(s, convId, m));
+      updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+        ...p,
+        subTasks: p.subTasks.map(t => (t.id === task.id ? { ...t, status: 'running', startedAt: Date.now() } : t)),
+      }));
+    },
+    onTaskChunk(task: SubTask, chunk: AgentChunk) {
+      const mid = taskToMsgId.get(task.id);
+      if (!mid) return;
+      if (chunk.type === 'text') {
+        const prev = streamedCharCount.get(task.id) ?? 0;
+        const next = prev + chunk.delta.length;
+        streamedCharCount.set(task.id, next);
+        // Throttle plan card updates for char count (every 15 chars)
+        if (prev === 0 || next % 15 < chunk.delta.length || next - prev > 50) {
+          updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+            ...p,
+            subTasks: p.subTasks.map(t =>
+              t.id === task.id ? { ...t, streamedChars: next } : t,
+            ),
+          }));
+        }
+      }
+      handleChunkInto(get, set, convId, mid, chunk, task.assignedAgentId, task);
+    },
+    onTaskDone(task: SubTask, success: boolean, errMsg?: string) {
+      const mid = taskToMsgId.get(task.id);
+      if (mid) {
+        set(s => patchMsg(s, convId, mid, m => ({ ...m, streaming: false })));
+      }
+      // Track agent failures for per-agent degradation
+      if (!success && task.assignedAgentId) {
+        agentFailureCounts.set(task.assignedAgentId, (agentFailureCounts.get(task.assignedAgentId) ?? 0) + 1);
+        console.warn(`[Degradation] Agent ${task.assignedAgentId} failures: ${agentFailureCounts.get(task.assignedAgentId)}`);
+      }
+      updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+        ...p,
+        subTasks: p.subTasks.map(t =>
+          t.id === task.id
+            ? {
+                ...t,
+                status: success ? (t.status === 'fallback' ? 'fallback' : 'success') : 'failed',
+                finishedAt: Date.now(),
+                output: errMsg,
+              }
+            : t,
+        ),
+      }));
+    },
+    onFallback(task: SubTask, fromId: string, toId: string) {
+      set(s =>
+        addMsg(s, convId, {
           id: genUuid(),
           conversationId: convId,
-          senderType: 'agent',
-          senderId: task.assignedAgentId,
-          content: { kind: 'text', text: '' },
+          senderType: 'system',
+          senderId: 'system',
+          content: {
+            kind: 'system',
+            text: `⚠️ ${s.agents.find(a => a.id === fromId)?.name ?? fromId} 失败，降级到 ${
+              s.agents.find(a => a.id === toId)?.name ?? toId
+            } 重试`,
+          },
           createdAt: Date.now(),
-          streaming: true,
-        };
-        taskToMsgId.set(task.id, m.id);
-        set(s => addMsg(s, convId, m));
-        // 更新 plan card 的 task status
-        updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
-          ...p,
-          subTasks: p.subTasks.map(t => (t.id === task.id ? { ...t, status: 'running', startedAt: Date.now() } : t)),
-        }));
+        }),
+      );
+      updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+        ...p,
+        subTasks: p.subTasks.map(t => (t.id === task.id ? { ...t, status: 'fallback', assignedAgentId: toId } : t)),
+      }));
+    },
+
+    // ── Phase 3: GenUI pause handler ──
+    onUiPause(task: SubTask, chunk: AgentChunk) {
+      if (chunk.type !== 'ui-component') return;
+      pausedTasks.set(task.id, {
+        agentId: task.assignedAgentId,
+        component: chunk.component,
+        props: chunk.props,
+      });
+      // End streaming on the task's message so the UI component renders cleanly
+      const mid = taskToMsgId.get(task.id);
+      if (mid) {
+        set(s => patchMsg(s, convId, mid, m => ({ ...m, streaming: false })));
+      }
+      // Update plan card to show waiting status
+      updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+        ...p,
+        subTasks: p.subTasks.map(t =>
+          t.id === task.id ? { ...t, status: 'pending', output: `⏸️ 等待用户选择: ${chunk.component}` } : t,
+        ),
+      }));
+      console.log(`[Orchestrator] Task "${task.title}" paused — awaiting user input (${chunk.component})`);
+    },
+
+    // ── Phase 3: GenUI resume handler ──
+    onUiResume(task: SubTask, userInput: string) {
+      // Restart streaming message
+      const mid = taskToMsgId.get(task.id);
+      if (mid) {
+        set(s => patchMsg(s, convId, mid, m => ({ ...m, streaming: true, content: { kind: 'text', text: m.content.kind === 'text' ? m.content.text + `\n\n> 用户选择: ${userInput}\n\n` : `> 用户选择: ${userInput}\n\n` } })));
+      }
+      updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+        ...p,
+        subTasks: p.subTasks.map(t =>
+          t.id === task.id ? { ...t, status: 'running', output: undefined } : t,
+        ),
+      }));
+    },
+  });
+
+  // ── Phase 3: Handle paused tasks — wait for user input then resume ──
+  if (pausedTasks.size > 0) {
+    console.log(`[Orchestrator] ${pausedTasks.size} task(s) paused, waiting for user input...`);
+
+    // Build a user-friendly prompt asking for input on all paused tasks
+    const pauseInfos: string[] = [];
+    for (const [taskId, info] of pausedTasks) {
+      const task = plan.subTasks.find(t => t.id === taskId);
+      if (!task) continue;
+      const componentMsg = formatUiComponentPrompt(info.component, info.props);
+      pauseInfos.push(`**${task.title}** (${info.agentId}):\n${componentMsg}`);
+    }
+
+    // Post a system message asking user to respond
+    const pauseMsg: Message = {
+      id: genUuid(),
+      conversationId: convId,
+      senderType: 'system',
+      senderId: 'system',
+      content: {
+        kind: 'system',
+        text: `🔄 **多Agent协作暂停** — ${pausedTasks.size} 个任务需要你的决策：\n\n${pauseInfos.join('\n\n')}\n\n> 请直接回复你的选择，我会将你的决定传递给对应的Agent继续工作。`,
       },
-      onTaskChunk(task: SubTask, chunk: AgentChunk) {
-        const mid = taskToMsgId.get(task.id);
-        if (!mid) return;
-        handleChunkInto(get, set, convId, mid, chunk, task.assignedAgentId, task);
-      },
-      onTaskDone(task: SubTask, success: boolean, errMsg?: string) {
-        const mid = taskToMsgId.get(task.id);
-        if (mid) {
-          set(s => patchMsg(s, convId, mid, m => ({ ...m, streaming: false })));
+      createdAt: Date.now(),
+    };
+    set(s => addMsg(s, convId, pauseMsg));
+
+    // Set up a one-time listener for user reply
+    // We store the pre-pause message count to detect new user messages
+    const prePauseMsgIds = new Set((get().messagesByConv[convId] ?? []).map(m => m.id));
+
+    // Poll for user response (max 30 min timeout for user interaction)
+    const USER_INPUT_TIMEOUT_MS = 30 * 60 * 1000;
+    const pollStart = Date.now();
+    const POLL_INTERVAL_MS = 2000;
+
+    while (pausedTasks.size > 0 && Date.now() - pollStart < USER_INPUT_TIMEOUT_MS) {
+      await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+      const currentMsgs = get().messagesByConv[convId] ?? [];
+      const newUserMsgs = currentMsgs.filter(
+        m => m.senderType === 'user' && m.content.kind === 'text' && !prePauseMsgIds.has(m.id),
+      );
+
+      if (newUserMsgs.length > 0) {
+        // Collect user input from all new messages
+        const userReply = newUserMsgs.map(m => m.content.kind === 'text' ? m.content.text : '').join('\n');
+        prePauseMsgIds.add(newUserMsgs[0]!.id); // Mark as processed
+
+        // Apply user input to all paused tasks (first reply unblocks all)
+        const resumedTasks: SubTask[] = [];
+        for (const [taskId] of pausedTasks) {
+          const task = plan.subTasks.find(t => t.id === taskId);
+          if (!task) continue;
+          userInputs.set(taskId, userReply);
+          resumedTasks.push(task);
         }
+
+        // Resume each paused task with user input
+        for (const task of resumedTasks) {
+          pausedTasks.delete(task.id);
+          console.log(`[Orchestrator] Resuming task "${task.title}" with user input: "${userReply.slice(0, 80)}"`);
+
+          const ok = await resumePausedTask(
+            task, plan, scheduleCtx, userReply,
+            {
+              onTaskStart(t) {}, // Already started
+              onTaskChunk(t, chunk) {
+                const mid = taskToMsgId.get(t.id);
+                if (!mid) return;
+                if (chunk.type === 'text') {
+                  const prev = streamedCharCount.get(t.id) ?? 0;
+                  const next = prev + chunk.delta.length;
+                  streamedCharCount.set(t.id, next);
+                  if (prev === 0 || next % 15 < chunk.delta.length || next - prev > 50) {
+                    updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+                      ...p,
+                      subTasks: p.subTasks.map(st =>
+                        st.id === t.id ? { ...st, streamedChars: next } : st,
+                      ),
+                    }));
+                  }
+                }
+                handleChunkInto(get, set, convId, mid, chunk, t.assignedAgentId, t);
+              },
+              onTaskDone(t, success, errMsg) {
+                const mid = taskToMsgId.get(t.id);
+                if (mid) {
+                  set(s => patchMsg(s, convId, mid, m => ({ ...m, streaming: false })));
+                }
+                if (!success && t.assignedAgentId) {
+                  agentFailureCounts.set(t.assignedAgentId, (agentFailureCounts.get(t.assignedAgentId) ?? 0) + 1);
+                }
+                updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({                  ...p,
+                  subTasks: p.subTasks.map(st =>
+                    st.id === t.id
+                      ? { ...st, status: success ? 'success' : 'failed', finishedAt: Date.now(), output: errMsg }
+                      : st,
+                  ),
+                }));
+              },
+              onFallback() {},
+              onUiResume(t, input) {
+                updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+                  ...p,
+                  subTasks: p.subTasks.map(st =>
+                    st.id === t.id ? { ...st, status: 'running', output: `用户选择: ${input.slice(0, 100)}` } : st,
+                  ),
+                }));
+              },
+            },
+          );
+
+          if (ok) {
+            // Now run downstream tasks that were waiting on this one
+            const readyDownstream = plan.subTasks.filter(t =>
+              t.status === 'pending' &&
+              t.dependsOn.every(d => plan.subTasks.find(st => st.id === d)?.status === 'success' ||
+                                     plan.subTasks.find(st => st.id === d)?.status === 'fallback'),
+            );
+            for (const dt of readyDownstream) {
+              const dtAgent = agentRegistry.get(dt.assignedAgentId);
+              if (!dtAgent) continue;
+              console.log(`[Orchestrator] Triggering downstream task "${dt.title}" after resume`);
+
+              // Create message for this downstream task
+              const dm: Message = {
+                id: genUuid(),
+                conversationId: convId,
+                senderType: 'agent',
+                senderId: dt.assignedAgentId,
+                content: { kind: 'text', text: '' },
+                createdAt: Date.now(),
+                streaming: true,
+              };
+              taskToMsgId.set(dt.id, dm.id);
+              set(s => addMsg(s, convId, dm));
+              updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+                ...p,
+                subTasks: p.subTasks.map(st => (st.id === dt.id ? { ...st, status: 'running', startedAt: Date.now() } : st)),
+              }));
+
+              // Run the downstream task
+              await schedule(
+                { ...plan, subTasks: [dt], status: 'running' },
+                scheduleCtx,
+                {
+                  onTaskStart() {},
+                  onTaskChunk(t, chunk) {
+                    const mid = taskToMsgId.get(t.id);
+                    if (!mid) return;
+                    handleChunkInto(get, set, convId, mid, chunk, t.assignedAgentId, t);
+                  },
+                  onTaskDone(t, success, errMsg) {
+                    const mid = taskToMsgId.get(t.id);
+                    if (mid) set(s => patchMsg(s, convId, mid, m => ({ ...m, streaming: false })));
+                    if (!success && t.assignedAgentId) {
+                      agentFailureCounts.set(t.assignedAgentId, (agentFailureCounts.get(t.assignedAgentId) ?? 0) + 1);
+                    }
+                    updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+                      ...p,
+                      subTasks: p.subTasks.map(st =>
+                        st.id === t.id
+                          ? { ...st, status: success ? 'success' : 'failed', finishedAt: Date.now(), output: errMsg }
+                          : st,
+                      ),
+                    }));
+                  },
+                  onFallback() {},
+                },
+                { taskTimeoutMs: 120000, planTimeoutMs: 600000 },
+              );
+            }
+          }
+        }
+        break; // Processed user input — exit poll loop
+      }
+    }
+
+    // Handle timeout: auto-proceed with defaults
+    if (pausedTasks.size > 0) {
+      for (const [taskId] of pausedTasks) {
+        const task = plan.subTasks.find(t => t.id === taskId);
+        if (!task) continue;
+        const defaultChoice = '默认选项';
+        userInputs.set(taskId, defaultChoice);
+        // Mark as degraded — auto-proceeded
         updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
           ...p,
-          subTasks: p.subTasks.map(t =>
-            t.id === task.id
-              ? {
-                  ...t,
-                  status: success ? (t.status === 'fallback' ? 'fallback' : 'success') : 'failed',
-                  finishedAt: Date.now(),
-                  output: errMsg,
-                }
-              : t,
+          subTasks: p.subTasks.map(st =>
+            st.id === task.id ? { ...st, status: 'fallback', output: '⏰ 用户超时无响应，自动使用默认选项继续' } : st,
           ),
         }));
-      },
-      onFallback(task: SubTask, fromId: string, toId: string) {
-        // 系统消息
         set(s =>
           addMsg(s, convId, {
             id: genUuid(),
             conversationId: convId,
             senderType: 'system',
             senderId: 'system',
-            content: {
-              kind: 'system',
-              text: `⚠️ ${s.agents.find(a => a.id === fromId)?.name ?? fromId} 失败，降级到 ${
-                s.agents.find(a => a.id === toId)?.name ?? toId
-              } 重试`,
-            },
+            content: { kind: 'system', text: `⏰ 等待超时 — "${task.title}" 将使用默认选项自动继续。` },
             createdAt: Date.now(),
           }),
         );
-        updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
-          ...p,
-          subTasks: p.subTasks.map(t => (t.id === task.id ? { ...t, status: 'fallback', assignedAgentId: toId } : t)),
-        }));
-      },
-    },
-  );
+      }
+    }
+  }
 
-  // 3) Aggregator 写一条总结
+  // 4) PMO writes summary (Phase 3: handle paused status in summary)
   const final = get().messagesByConv[convId]?.find(m => m.id === planMsg.id);
   const planAfter =
     final && final.content.kind === 'plan'
       ? final.content.plan
       : { ...plan, status: 'done' as const };
-  const summary = summarize(planAfter);
+
+  // ── Phase 4: Critic Review ──
+  // Review all completed tasks' outputs against acceptance criteria
+  const reviewResults: ReviewResult[] = [];
+  for (const task of planAfter.subTasks) {
+    if (task.status !== 'success' && task.status !== 'fallback') continue;
+
+    let output = task.output ?? '';
+    let artifactContent: string | undefined;
+    let artifactType: ArtifactType | undefined;
+
+    if (task.producedArtifactId) {
+      const artifact = get().artifacts.find(a => a.id === task.producedArtifactId);
+      if (artifact) {
+        const latestVer = artifact.versions[artifact.versions.length - 1];
+        if (latestVer) {
+          artifactContent = latestVer.content;
+          artifactType = artifact.type;
+          output = output || latestVer.content.slice(0, 500);
+        }
+      }
+    }
+
+    if (!output && !artifactContent) continue;
+
+    try {
+      const result = await reviewTask(plan.id, task, output, {
+        artifactContent,
+        artifactType,
+      });
+
+      reviewResults.push(result);
+
+      // Store review verdicts back into the plan card
+      updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+        ...p,
+        subTasks: p.subTasks.map(t =>
+          t.id === task.id
+            ? { ...t, reviewVerdict: result.verdict, reviewScore: result.score, reviewFeedback: result.feedback }
+            : t,
+        ),
+      }));
+    } catch (e: any) {
+      console.warn(`[Critic] Review failed for task "${task.title}":`, e?.message ?? e);
+    }
+  }
+
+  // Generate critic report from all reviews
+  const criticReport = reviewResults.length > 0 ? generateCriticReport(reviewResults) : undefined;
+
+  // ── Summary ──
+  const hasPaused = planAfter.subTasks.some(t => t.status === 'paused' || t.status === 'pending');
+  const summary = summarize({
+    ...planAfter,
+    status: hasPaused ? 'running' : planAfter.status,
+  });
+
+  // Build critic section for summary message
+  let criticSection = '';
+  if (criticReport) {
+    const lines: string[] = [
+      `\n\n📊 **质量评审** — 综合评分: ${(criticReport.overallScore * 100).toFixed(0)}%`,
+    ];
+    if (criticReport.codeQuality !== undefined) {
+      lines.push(`  · 代码质量: ${(criticReport.codeQuality * 100).toFixed(0)}%`);
+    }
+    if (criticReport.security !== undefined) {
+      lines.push(`  · 安全检查: ${criticReport.security}`);
+    }
+    if (criticReport.suggestions.length > 0) {
+      lines.push(`  · 改进建议:`);
+      criticReport.suggestions.slice(0, 3).forEach(s => lines.push(`    - ${s.split('\n')[0]}`));
+    }
+    if (criticReport.overallScore < 0.5) {
+      const rejectList = reviewResults.filter(r => r.verdict === 'rejected' || r.score < 0.5);
+      lines.push(`\n⚠️ **需要人工介入** — 以下产物未通过审查:`);
+      rejectList.forEach(r => {
+        const taskName = planAfter.subTasks.find(t => t.id === r.taskId)?.title ?? r.taskId;
+        lines.push(`  · **${taskName}** (${(r.score * 100).toFixed(0)}分)`);
+        lines.push(`    ${r.feedback.slice(0, 120)}`);
+      });
+    }
+    criticSection = lines.join('\n');
+  }
+
+  const summaryPrefix = hasPaused
+    ? '⏸️ **部分任务等待用户决策** — 请回复你的选择后 Agent 将继续工作。\n\n'
+    : '';
+
   set(s =>
     addMsg(s, convId, {
       id: genUuid(),
       conversationId: convId,
       senderType: 'agent',
       senderId: 'agent_orchestrator',
-      content: { kind: 'text', text: `🧭 **PMO 周报**\n\n${summary}` },
+      content: { kind: 'text', text: `🧭 **PMO 周报**\n\n${summaryPrefix}${summary}${criticSection}` },
       createdAt: Date.now(),
     }),
   );
-  // 标记 plan card 为 done
-  updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({ ...p, status: 'done' }));
+  // Update plan card status
+  updatePlanCard(get, set, convId, planMsg.id, plan.id, p => ({
+    ...p,
+    status: hasPaused ? 'running' : (planAfter.subTasks.every(t => t.status === 'success' || t.status === 'fallback') ? 'done' : 'failed'),
+  }));
+
+  // Post blackboard snapshot as an inline chat card
+  const board = getBlackboard(plan.id);
+  if (board) {
+    set(s =>
+      addMsg(s, convId, {
+        id: genUuid(),
+        conversationId: convId,
+        senderType: 'agent',
+        senderId: 'agent_orchestrator',
+        content: { kind: 'blackboard', board },
+        createdAt: Date.now(),
+      }),
+    );
+  }
+}
+
+/** Format a GenUI component into a human-readable prompt */
+function formatUiComponentPrompt(component: string, props: Record<string, unknown>): string {
+  const title = (props.title as string) ?? '请选择';
+  const options = (props.options as Array<{ id: string; label: string; description?: string }>) ?? [];
+  const lines = [`> ${title}`];
+  for (const opt of options) {
+    lines.push(`  • **${opt.label}** — ${opt.description ?? ''}`);
+  }
+  return lines.join('\n');
 }
 
 function updatePlanCard(
@@ -1207,6 +1667,9 @@ function updatePlanCard(
 // ── 流式文字缓冲器：累积 text delta 批量更新，减少 Zustand re-render ──
 const textBuffer = new Map<ID, string>();
 let flushScheduled = false;
+
+// ── Per-agent degradation tracking ──
+const agentFailureCounts = new Map<string, number>();
 
 function flushTextBuffer(set: SetState, convId: ID, msgId: ID) {
   const delta = textBuffer.get(msgId);

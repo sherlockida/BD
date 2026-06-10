@@ -47,4 +47,5 @@ export {
   Layers,
   PanelRightOpen,
   PanelRightClose,
+  PauseCircle,
 } from 'lucide-react';

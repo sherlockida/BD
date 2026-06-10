@@ -1,3 +1,14 @@
+/**
+ * @deprecated Since Orchestrator 2.0. Use IntentClassifier + Supervisor instead.
+ *
+ * This file is kept for backward compatibility during the Strangler Fig migration.
+ * New code should use:
+ *   - classifyIntent() from './classifier' for intent classification
+ *   - generatePlanViaLlm() from './supervisor' for LLM-based planning
+ *   - planTasks() from server plannedService.ts as the single source of truth
+ *
+ * This file will be removed in the next major version.
+ */
 import type { Agent, OrchestratorPlan, SubTask } from '../types';
 import { uid } from '../utils/id';
 import { agentRegistry } from '../agents/registry';

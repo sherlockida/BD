@@ -1,11 +1,14 @@
 /**
  * LLM Gateway — unified streaming interface over Anthropic / OpenAI / DeepSeek.
  * Each method returns AsyncIterable<AgentChunk>, matching the frontend IAgent contract.
+ *
+ * v2.1: 全链路可观测日志 — 请求/流式进度/完整响应/错误详情
  */
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { config } from '../config.js';
 import { CATALOG_SYSTEM_PROMPT } from './genuiCatalog.js';
+import { log } from '../utils/logger.js';
 
 // ── AgentChunk types (mirrors frontend types.ts) ──
 export type AgentChunk =
@@ -80,6 +83,13 @@ function getDeepSeek(): OpenAI {
   return _deepseek;
 }
 
+/** Calculate total character count across all messages */
+function totalInputChars(params: LlmChatParams): number {
+  const sysLen = params.systemPrompt?.length ?? 0;
+  const msgLen = params.messages.reduce((sum, m) => sum + m.content.length, 0);
+  return sysLen + msgLen;
+}
+
 // ────────────────────────────────────────────────────────────
 // Public API
 // ────────────────────────────────────────────────────────────
@@ -102,11 +112,13 @@ export async function* chatWithAgent(
   if (!available.includes(primary)) {
     // Smart fallback: use any available provider
     if (available.length === 0) {
-      yield { type: 'error', error: 'No LLM provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or DEEPSEEK_API_KEY in .env' };
+      const errMsg = 'No LLM provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or DEEPSEEK_API_KEY in .env';
+      log.agentError(vendor, vendor, errMsg, 'provider-check');
+      yield { type: 'error', error: errMsg };
       return;
     }
     const fallback = available[0]!;
-    console.log(`[LLM] ${vendor} → primary ${primary} unavailable, fallback to ${fallback}`);
+    log.info('LLM', `${vendor} → primary ${primary} unavailable, fallback to ${fallback}`);
     yield* chatWithProvider(fallback, params, vendor);
     return;
   }
@@ -120,9 +132,9 @@ async function* chatWithProvider(
   vendor: LlmVendor,
 ): AsyncIterable<AgentChunk> {
   switch (provider) {
-    case 'anthropic': yield* chatWithClaude(params); break;
-    case 'openai':    yield* chatWithGPT(params); break;
-    case 'deepseek':  yield* chatWithDeepSeek(params); break;
+    case 'anthropic': yield* chatWithClaude(params, vendor); break;
+    case 'openai':    yield* chatWithGPT(params, vendor); break;
+    case 'deepseek':  yield* chatWithDeepSeek(params, vendor); break;
   }
 }
 
@@ -136,24 +148,30 @@ export function availableProviders(): string[] {
 }
 
 // ────────────────────────────────────────────────────────────
-// Provider implementations
+// Provider implementations (with full observability logging)
 // ────────────────────────────────────────────────────────────
 
-async function* chatWithClaude(params: LlmChatParams): AsyncIterable<AgentChunk> {
+async function* chatWithClaude(params: LlmChatParams, vendor: LlmVendor): AsyncIterable<AgentChunk> {
   const client = getAnthropic();
   const systemPrompt = params.systemPrompt;
+  const model = 'claude-sonnet-4-6-20250514';
 
-  // Convert our messages to Anthropic format (no 'system' role in messages array)
   const anthropicMessages = params.messages
     .filter(m => m.role !== 'system')
-    .map(m => ({
-      role: m.role as 'user' | 'assistant',
-      content: m.content,
-    }));
+    .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
+  const inputChars = (systemPrompt?.length ?? 0) +
+    anthropicMessages.reduce((s, m) => s + m.content.length, 0);
+
+  log.llmStreamStart(model, systemPrompt?.length ?? 0, anthropicMessages.length, inputChars);
+
+  const startTime = Date.now();
+  let fullText = '';
+  let lastProgressTime = startTime;
 
   try {
     const stream = client.messages.stream({
-      model: 'claude-sonnet-4-6-20250514',
+      model,
       max_tokens: params.maxTokens ?? 4096,
       temperature: params.temperature ?? 0.7,
       system: systemPrompt,
@@ -162,7 +180,15 @@ async function* chatWithClaude(params: LlmChatParams): AsyncIterable<AgentChunk>
 
     for await (const event of stream) {
       if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullText += event.delta.text;
         yield { type: 'text', delta: event.delta.text };
+
+        // Progress log every 5 seconds
+        const now = Date.now();
+        if (now - lastProgressTime > 5000) {
+          log.llmStreamProgress(fullText.length, now - startTime);
+          lastProgressTime = now;
+        }
       } else if (event.type === 'content_block_start' && event.content_block.type === 'tool_use') {
         yield {
           type: 'tool-call',
@@ -171,16 +197,23 @@ async function* chatWithClaude(params: LlmChatParams): AsyncIterable<AgentChunk>
         };
       }
     }
+
+    const durationMs = Date.now() - startTime;
+    log.llmResponse(fullText, durationMs);
+    log.agentDone(vendor, vendor, fullText.length, durationMs);
     yield { type: 'done' };
   } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    log.agentError(vendor, vendor, `Claude API error: ${err.message}`, `streaming (${durationMs}ms, ${fullText.length}chars received before error)`);
     yield { type: 'error', error: `Claude API error: ${err.message}` };
   }
 }
 
-async function* chatWithGPT(params: LlmChatParams): AsyncIterable<AgentChunk> {
+async function* chatWithGPT(params: LlmChatParams, vendor: LlmVendor): AsyncIterable<AgentChunk> {
   const client = getOpenAI();
-  const gptMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+  const model = 'gpt-5';
 
+  const gptMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   if (params.systemPrompt) {
     gptMessages.push({ role: 'system', content: params.systemPrompt });
   }
@@ -188,9 +221,15 @@ async function* chatWithGPT(params: LlmChatParams): AsyncIterable<AgentChunk> {
     gptMessages.push({ role: m.role as 'user' | 'assistant' | 'system', content: m.content });
   }
 
+  log.llmStreamStart(model, params.systemPrompt?.length ?? 0, gptMessages.length, totalInputChars(params));
+
+  const startTime = Date.now();
+  let fullText = '';
+  let lastProgressTime = startTime;
+
   try {
     const stream = await client.chat.completions.create({
-      model: 'gpt-5',
+      model,
       max_tokens: params.maxTokens ?? 4096,
       temperature: params.temperature ?? 0.7,
       messages: gptMessages,
@@ -200,19 +239,33 @@ async function* chatWithGPT(params: LlmChatParams): AsyncIterable<AgentChunk> {
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content;
       if (delta) {
+        fullText += delta;
         yield { type: 'text', delta };
+
+        const now = Date.now();
+        if (now - lastProgressTime > 5000) {
+          log.llmStreamProgress(fullText.length, now - startTime);
+          lastProgressTime = now;
+        }
       }
     }
+
+    const durationMs = Date.now() - startTime;
+    log.llmResponse(fullText, durationMs);
+    log.agentDone(vendor, vendor, fullText.length, durationMs);
     yield { type: 'done' };
   } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    log.agentError(vendor, vendor, `OpenAI API error: ${err.message}`, `streaming (${durationMs}ms, ${fullText.length}chars received before error)`);
     yield { type: 'error', error: `OpenAI API error: ${err.message}` };
   }
 }
 
-async function* chatWithDeepSeek(params: LlmChatParams): AsyncIterable<AgentChunk> {
+async function* chatWithDeepSeek(params: LlmChatParams, vendor: LlmVendor): AsyncIterable<AgentChunk> {
   const client = getDeepSeek();
-  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+  const model = 'deepseek-v4-flash';
 
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   if (params.systemPrompt) {
     messages.push({ role: 'system', content: params.systemPrompt });
   }
@@ -220,9 +273,16 @@ async function* chatWithDeepSeek(params: LlmChatParams): AsyncIterable<AgentChun
     messages.push({ role: m.role as 'user' | 'assistant' | 'system', content: m.content });
   }
 
+  // ── Log: LLM request start ──
+  log.llmStreamStart(model, params.systemPrompt?.length ?? 0, messages.length, totalInputChars(params));
+
+  const startTime = Date.now();
+  let fullText = '';
+  let lastProgressTime = startTime;
+
   try {
     const stream = await client.chat.completions.create({
-      model: 'deepseek-chat',
+      model,
       max_tokens: params.maxTokens ?? 4096,
       temperature: params.temperature ?? 0.7,
       messages,
@@ -232,11 +292,36 @@ async function* chatWithDeepSeek(params: LlmChatParams): AsyncIterable<AgentChun
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content;
       if (delta) {
+        fullText += delta;
         yield { type: 'text', delta };
+
+        // ── Log: progress every 5 seconds ──
+        const now = Date.now();
+        if (now - lastProgressTime > 5000) {
+          log.llmStreamProgress(fullText.length, now - startTime);
+          lastProgressTime = now;
+        }
       }
     }
+
+    // ── Log: full response ──
+    const durationMs = Date.now() - startTime;
+    log.llmResponse(fullText, durationMs);
+    log.agentDone(vendor, vendor, fullText.length, durationMs);
     yield { type: 'done' };
   } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    // ── Log: detailed error ──
+    log.agentError(
+      vendor, vendor,
+      `DeepSeek API error: ${err.message}`,
+      `streaming (${durationMs}ms, ${fullText.length}chars received before error)`,
+    );
+    // If we got partial content, log it so user can see what was generated before failure
+    if (fullText.length > 0) {
+      log.divider('PARTIAL RESPONSE (before error)');
+      log.llmResponse(fullText, durationMs);
+    }
     yield { type: 'error', error: `DeepSeek API error: ${err.message}` };
   }
 }
@@ -257,24 +342,40 @@ export async function chatWithAgentSync(
 
   if (provider === 'anthropic') {
     const client = getAnthropic();
+    const model = 'claude-sonnet-4-6-20250514';
+
     const anthropicMessages = params.messages
       .filter(m => m.role !== 'system')
       .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-6-20250514',
-      max_tokens: params.maxTokens ?? 4096,
-      temperature: params.temperature ?? 0.3,
-      system: params.systemPrompt,
-      messages: anthropicMessages,
-    });
-    const block = response.content.find(b => b.type === 'text');
-    return block?.type === 'text' ? block.text : '';
+    log.llmStreamStart(model, params.systemPrompt?.length ?? 0, anthropicMessages.length, totalInputChars(params));
+
+    const startTime = Date.now();
+    try {
+      const response = await client.messages.create({
+        model,
+        max_tokens: params.maxTokens ?? 4096,
+        temperature: params.temperature ?? 0.3,
+        system: params.systemPrompt,
+        messages: anthropicMessages,
+      });
+      const block = response.content.find(b => b.type === 'text');
+      const text = block?.type === 'text' ? block.text : '';
+
+      const durationMs = Date.now() - startTime;
+      log.llmResponse(text, durationMs);
+      log.agentDone(vendor, 'planner', text.length, durationMs);
+      return text;
+    } catch (err: any) {
+      const durationMs = Date.now() - startTime;
+      log.agentError(vendor, 'planner', `Claude sync API error: ${err.message}`, `${durationMs}ms`);
+      throw err;
+    }
   }
 
   // OpenAI / DeepSeek (both use OpenAI-compatible API)
   const client = provider === 'openai' ? getOpenAI() : getDeepSeek();
-  const model = provider === 'openai' ? 'gpt-5' : 'deepseek-chat';
+  const model = provider === 'openai' ? 'gpt-5' : 'deepseek-v4-flash';
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   if (params.systemPrompt) {
@@ -284,12 +385,26 @@ export async function chatWithAgentSync(
     messages.push({ role: m.role as 'user' | 'assistant' | 'system', content: m.content });
   }
 
-  const response = await client.chat.completions.create({
-    model,
-    max_tokens: params.maxTokens ?? 4096,
-    temperature: params.temperature ?? 0.3,
-    messages,
-  });
+  log.llmStreamStart(model, params.systemPrompt?.length ?? 0, messages.length, totalInputChars(params));
 
-  return response.choices[0]?.message?.content ?? '';
+  const startTime = Date.now();
+  try {
+    const response = await client.chat.completions.create({
+      model,
+      max_tokens: params.maxTokens ?? 4096,
+      temperature: params.temperature ?? 0.3,
+      messages,
+    });
+
+    const text = response.choices[0]?.message?.content ?? '';
+
+    const durationMs = Date.now() - startTime;
+    log.llmResponse(text, durationMs);
+    log.agentDone(vendor, 'planner', text.length, durationMs);
+    return text;
+  } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    log.agentError(vendor, 'planner', `Sync API error: ${err.message}`, `${durationMs}ms`);
+    throw err;
+  }
 }

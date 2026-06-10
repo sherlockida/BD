@@ -150,6 +150,7 @@ export function ArtifactPanel() {
                 </div>
                 <div className="flex-1">
                   <DiffEditor
+                    key={`${prevVersion.id}-${version.id}`}
                     height="100%"
                     language="javascript"
                     original={prevVersion.content}
@@ -419,6 +420,7 @@ function CodeBody({
       </div>
       <div className="flex-1">
         <Editor
+          key={version.id}
           height="100%"
           language={language}
           value={version.content}
@@ -594,19 +596,17 @@ const AGENTHUB_RUNTIME = `
 })();
 </script>`;
 
-/** Inject CSP meta tag + AgentHub runtime into HTML content for iframe sandbox safety */
+/** Inject AgentHub runtime into HTML content for iframe sandbox (CSP disabled for dev flexibility) */
 function injectCsp(html: string): string {
-  // Relaxed CSP: allow connect-src to support basic fetch/XHR in preview
-  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' data: https: http:; connect-src 'self' https: http:; frame-src 'none';">`;
   const runtime = AGENTHUB_RUNTIME;
 
   if (/<head[^>]*>/i.test(html)) {
-    return html.replace(/<head[^>]*>/i, `$&${csp}\n${runtime}`);
+    return html.replace(/<head[^>]*>/i, `$&\n${runtime}`);
   }
   if (/<html[^>]*>/i.test(html)) {
-    return html.replace(/<html[^>]*>/i, `$&<head>${csp}\n${runtime}</head>`);
+    return html.replace(/<html[^>]*>/i, `$&<head>${runtime}</head>`);
   }
-  return `<!DOCTYPE html><html><head>${csp}\n${runtime}</head><body>${html}</body></html>`;
+  return `<!DOCTYPE html><html><head>${runtime}</head><body>${html}</body></html>`;
 }
 
 function formatTs(ts: number) {

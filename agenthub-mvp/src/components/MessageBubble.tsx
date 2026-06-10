@@ -1,6 +1,7 @@
 import type { Message, Agent } from '../types';
 import { useAppStore } from '../store/appStore';
 import { PlanCard } from './PlanCard';
+import { BlackboardCard } from './BlackboardCard';
 import { ArtifactCard } from './ArtifactCard';
 import { DiffCardInChat } from './DiffViewer';
 import { DeployCard } from './DeployCard';
@@ -149,7 +150,10 @@ function BubbleBody({ message: m, isUser }: { message: Message; isUser: boolean 
       );
 
     case 'plan':
-      return <PlanCard plan={m.content.plan} />;
+      return <PlanCard plan={m.content.plan} convId={m.conversationId} />;
+
+    case 'blackboard':
+      return <BlackboardCard board={m.content.board} compact />;
 
     case 'artifact':
       return (

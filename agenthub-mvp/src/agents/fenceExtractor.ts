@@ -98,15 +98,38 @@ export function createFenceExtractor() {
         // 去掉代码块末尾可能多带的一个换行
         const content = state.buf.endsWith('\n') ? state.buf.slice(0, -1) : state.buf;
         const lang = state.lang;
-        const { name, type } = nextName(lang);
-        out.push({
-          type: 'artifact-draft',
-          artifactType: type,
-          name,
-          language: lang || undefined,
-          content,
-          commitMessage: 'Agent 生成',
-        });
+
+        // Phase 3: GenUI component detection — ```ui { "component": "ChoiceCards", ... } ```
+        if (lang === 'ui' || lang === 'genui') {
+          try {
+            const parsed = JSON.parse(content);
+            if (parsed.component) {
+              out.push({
+                type: 'ui-component',
+                component: parsed.component,
+                props: (parsed.props ?? {}) as Record<string, unknown>,
+              });
+            } else {
+              // Fallback: treat as code artifact
+              const { name, type } = nextName('json');
+              out.push({ type: 'artifact-draft', artifactType: type, name, language: 'json', content, commitMessage: 'GenUI 组件' });
+            }
+          } catch {
+            // Invalid JSON — treat as code artifact
+            const { name, type } = nextName('json');
+            out.push({ type: 'artifact-draft', artifactType: type, name, language: 'json', content, commitMessage: 'GenUI 组件 (格式异常)' });
+          }
+        } else {
+          const { name, type } = nextName(lang);
+          out.push({
+            type: 'artifact-draft',
+            artifactType: type,
+            name,
+            language: lang || undefined,
+            content,
+            commitMessage: 'Agent 生成',
+          });
+        }
         // 切回 outside，剩余文本继续处理
         const rest = state.pending.slice(idx + 3);
         state = { kind: 'outside', pending: '' };
@@ -128,15 +151,26 @@ export function createFenceExtractor() {
       // 保护：如果内容为空就丢弃
       const content = (state.buf + state.pending).replace(/\n$/, '');
       if (content.trim().length > 0) {
-        const { name, type } = nextName(state.lang);
-        out.push({
-          type: 'artifact-draft',
-          artifactType: type,
-          name,
-          language: state.lang || undefined,
-          content,
-          commitMessage: 'Agent 生成（流意外结束）',
-        });
+        // GenUI: try parse as JSON component
+        if (state.lang === 'ui' || state.lang === 'genui') {
+          try {
+            const parsed = JSON.parse(content);
+            if (parsed.component) {
+              out.push({ type: 'ui-component', component: parsed.component, props: (parsed.props ?? {}) as Record<string, unknown> });
+            }
+          } catch { /* fall through to artifact-draft below */ }
+        }
+        if (out.length === 0) {
+          const { name, type } = nextName(state.lang);
+          out.push({
+            type: 'artifact-draft',
+            artifactType: type,
+            name,
+            language: state.lang || undefined,
+            content,
+            commitMessage: 'Agent 生成（流意外结束）',
+          });
+        }
       }
     }
     state = { kind: 'outside', pending: '' };

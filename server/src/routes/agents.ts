@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { chatWithAgent, availableProviders, type LlmVendor } from '../services/llmGateway.js';
 import { planTasks } from '../services/plannerService.js';
 import { db, agents as agentsTable, loadCustomAgents, messages, conversations } from '../db/index.js';
+import { log } from '../utils/logger.js';
 
 export const agentsRouter = Router();
 
@@ -65,6 +66,18 @@ const BUILT_IN_AGENTS: AgentMeta[] = [
     capabilities: ['code', 'deploy'],
     tagline: 'DevOps 全栈，擅长部署流水线、CI/CD 配置',
     systemPrompt: '你是一位 DevOps 工程师，擅长部署、CI/CD、自动化脚本。回复简洁实用，给出可直接运行的配置和命令。',
+    online: true,
+  },
+  {
+    id: 'agent_doc',
+    name: 'DocAgent',
+    avatarEmoji: '✍️',
+    avatarColor: 'bg-pink-500',
+    vendor: 'custom',
+    capabilities: ['doc'],
+    tagline: '品牌文案与文档专家（用户自建）',
+    systemPrompt: '你是一位品牌文案专家，写文字克制、有故事感、有质感。',
+    isCustom: true,
     online: true,
   },
 ];
@@ -162,14 +175,15 @@ agentsRouter.post('/custom', async (req, res) => {
 agentsRouter.post('/chat', async (req, res) => {
   const { agentId, messages, userPrompt, systemPrompt } = req.body;
 
-  // Validate agent exists
+  // ── Validate agent exists ──
   const agentMeta = allAgents().find(a => a.id === agentId);
   if (!agentMeta) {
+    log.agentNotFound(agentId);
     res.status(404).json({ error: `Agent not found: ${agentId}` });
     return;
   }
 
-  // Build message list
+  // ── Build message list ──
   const chatMessages = (messages ?? []).map((m: any) => ({
     role: m.role ?? (m.senderType === 'user' ? 'user' : 'assistant'),
     content: m.content?.text ?? m.content ?? '',
@@ -185,7 +199,12 @@ agentsRouter.post('/chat', async (req, res) => {
     return;
   }
 
-  // SSE headers
+  // ── Log: agent request ──
+  const promptPreview = userPrompt?.slice(0, 200) ?? chatMessages[0]?.content?.slice(0, 200) ?? '';
+  log.divider(`${agentMeta.name} (${agentId})`);
+  log.agentRequest(agentId, agentMeta.name, promptPreview, chatMessages.length);
+
+  // ── SSE headers ──
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -196,20 +215,42 @@ agentsRouter.post('/chat', async (req, res) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
+  const startTime = Date.now();
+  let totalChars = 0;
+  let chunkCount = 0;
+
   try {
     const vendor = agentMeta.vendor as LlmVendor;
-    console.log(`[Chat] ${agentId} (${vendor}) ← "${userPrompt?.slice(0, 80) ?? chatMessages[0]?.content?.slice(0, 80)}"`);
 
     for await (const chunk of chatWithAgent(vendor, {
       systemPrompt: systemPrompt ?? agentMeta.systemPrompt,
       messages: chatMessages,
     })) {
       send(chunk);
-      if (chunk.type === 'done' || chunk.type === 'error') break;
+
+      // Track content for final summary
+      if (chunk.type === 'text') {
+        totalChars += chunk.delta?.length ?? 0;
+        chunkCount++;
+      }
+
+      if (chunk.type === 'error') {
+        log.agentError(agentId, agentMeta.name, chunk.error, `after ${chunkCount} chunks, ${totalChars} chars, ${Date.now() - startTime}ms`);
+        break;
+      }
+      if (chunk.type === 'done') break;
     }
   } catch (err: any) {
+    log.agentError(agentId, agentMeta.name, err.message, `connection error after ${chunkCount} chunks, ${totalChars} chars, ${Date.now() - startTime}ms`);
     send({ type: 'error', error: err.message });
   } finally {
+    const durationMs = Date.now() - startTime;
+    if (totalChars > 0) {
+      log.agentDone(agentId, agentMeta.name, totalChars, durationMs);
+    } else if (durationMs > 100) {
+      // Agent produced zero content — warn
+      log.agentError(agentId, agentMeta.name, `Zero content produced in ${durationMs}ms`, 'empty-response');
+    }
     res.end();
   }
 });
@@ -219,6 +260,8 @@ agentsRouter.post('/plan', async (req, res) => {
   try {
     const { intent } = req.body;
     if (!intent) return res.status(400).json({ error: 'intent is required' });
+
+    log.divider('PMO 任务规划');
 
     const availableAgents = allAgents()
       .filter(a => a.id !== 'agent_orchestrator')
@@ -230,10 +273,24 @@ agentsRouter.post('/plan', async (req, res) => {
       }));
 
     const planId = uuid();
+    const startTime = Date.now();
     const plan = await planTasks(intent, availableAgents, planId);
+    const durationMs = Date.now() - startTime;
+
+    // ── Log: plan detail ──
+    log.planGenerated(
+      plan.id, plan.intent, plan.subTasks.length,
+      plan.complexity ?? 'unknown',
+      plan.subTasks.every(t => t.assignedAgentId) ? 'keyword-match' : 'LLM-generated',
+    );
+    plan.subTasks.forEach((t, i) => {
+      log.planTask(i + 1, t.title, t.assignedAgentId || '(unassigned)', t.dependsOn);
+    });
+    log.info('PLAN', `Generated in ${durationMs}ms`);
 
     res.json(plan);
   } catch (err: any) {
+    log.agentError('agent_orchestrator', 'PMO', err.message, 'plan-generation');
     res.status(500).json({ error: err.message });
   }
 });

@@ -35,7 +35,11 @@ export class RemoteAgent implements IAgent {
         content: m.content.kind === 'text' ? m.content.text : JSON.stringify(m.content),
       }));
 
-    const systemPrompt = this.meta.systemPrompt;
+    // Phase 2: inject upstream context into system prompt
+    const upstreamCtx = input.upstreamContext;
+    const effectiveSystemPrompt = upstreamCtx
+      ? (this.meta.systemPrompt ?? '') + `\n\n## 上游任务上下文\n${upstreamCtx}`
+      : this.meta.systemPrompt;
     const extractor = createFenceExtractor();
 
     try {
@@ -43,7 +47,7 @@ export class RemoteAgent implements IAgent {
         this.meta.id,
         input.userPrompt,
         messages,
-        systemPrompt,
+        effectiveSystemPrompt,
       )) {
         // Map API chunk types to frontend AgentChunk types
         switch (chunk.type) {
@@ -75,6 +79,14 @@ export class RemoteAgent implements IAgent {
             break;
           case 'tool-call':
             yield { type: 'tool-call', tool: chunk.tool ?? '', args: chunk.args };
+            break;
+          case 'ui-component':
+            // Phase 3: forward GenUI component from backend (ChoiceCards etc.)
+            yield {
+              type: 'ui-component',
+              component: (chunk as any).component ?? 'unknown',
+              props: (chunk as any).props ?? {},
+            };
             break;
           case 'error':
             // flush 剩余缓冲再退出，避免吞掉用户已经看到的内容

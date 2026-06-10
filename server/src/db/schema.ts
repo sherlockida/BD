@@ -130,6 +130,60 @@ export const agents = pgTable('agents', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
+// ── orchestrator_plans ──
+export const orchestratorPlans = pgTable('orchestrator_plans', {
+  id: varchar('id', { length: 100 }).primaryKey(),
+  sessionId: varchar('session_id', { length: 100 }),
+  intent: text('intent').notNull(),
+  summary: text('summary'),
+  complexity: varchar('complexity', { length: 20 }), // 'simple' | 'medium' | 'complex'
+  status: varchar('status', { length: 20 }).notNull().default('planning'), // 'planning' | 'running' | 'done' | 'failed'
+  subTasks: jsonb('sub_tasks').notNull().$type<Array<{
+    id: string;
+    title: string;
+    description: string;
+    assignedAgentId: string;
+    fallbackAgentId?: string;
+    dependsOn: string[];
+    status: string;
+    startedAt?: number;
+    finishedAt?: number;
+    output?: string;
+    producedArtifactId?: string;
+    acceptanceCriteria?: string[];
+    retryCount?: number;
+    reviewVerdict?: string;
+    reviewScore?: number;
+    reviewFeedback?: string;
+  }>>(),
+  parallelism: jsonb('parallelism').$type<string[][]>(),
+  skipReview: boolean('skip_review').default(false),
+  sessionId2: varchar('session_id_2', { length: 100 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  sessionIdx: index('idx_plan_session').on(table.sessionId),
+  statusIdx: index('idx_plan_status').on(table.status),
+}));
+
+// ── execution_traces ──
+export const executionTraces = pgTable('execution_traces', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  planId: varchar('plan_id', { length: 100 }).notNull(),
+  taskId: varchar('task_id', { length: 100 }),
+  step: varchar('step', { length: 200 }).notNull(),
+  phase: varchar('phase', { length: 20 }).notNull(), // 'planning' | 'execution' | 'review' | 'synthesis' | 'error'
+  input: jsonb('input'),
+  output: jsonb('output'),
+  durationMs: integer('duration_ms').default(0),
+  metadata: jsonb('metadata'),
+  timestamp: timestamp('timestamp', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  planIdx: index('idx_trace_plan').on(table.planId),
+  taskIdx: index('idx_trace_task').on(table.taskId),
+  phaseIdx: index('idx_trace_phase').on(table.phase),
+}));
+
 // ── deploys ──
 export const deploys = pgTable('deploys', {
   id: uuid('id').defaultRandom().primaryKey(),
